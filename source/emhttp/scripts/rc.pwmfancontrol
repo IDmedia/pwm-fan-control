@@ -1,0 +1,69 @@
+#!/bin/bash
+# PWM Fan Control service control
+# Usage: rc.pwmfancontrol start|stop|restart|status|watchdog
+
+NAME="pwm.fan.control"
+PLUGIN="/usr/local/emhttp/plugins/$NAME"
+PIDFILE="/var/run/$NAME.pid"
+STATUS="/tmp/$NAME/status.json"
+PHP=/usr/bin/php
+
+running() {
+    [[ -f "$PIDFILE" ]] && kill -0 "$(cat "$PIDFILE" 2>/dev/null)" 2>/dev/null
+}
+
+start() {
+    if running; then
+        echo "PWM Fan Control is already running"
+        return 0
+    fi
+    setsid nohup "$PHP" "$PLUGIN/scripts/daemon.php" >/dev/null 2>&1 < /dev/null &
+    for _ in $(seq 1 30); do
+        running && { echo "PWM Fan Control started"; return 0; }
+        sleep 0.1
+    done
+    echo "PWM Fan Control did not start (is it enabled?)"
+    return 1
+}
+
+stop() {
+    if running; then
+        local pid
+        pid=$(cat "$PIDFILE")
+        kill "$pid" 2>/dev/null
+        for _ in $(seq 1 50); do
+            kill -0 "$pid" 2>/dev/null || break
+            sleep 0.1
+        done
+        kill -0 "$pid" 2>/dev/null && kill -9 "$pid" 2>/dev/null
+    fi
+    rm -f "$PIDFILE"
+    # Make sure every fan is handed back to the BIOS, even if the daemon was killed
+    "$PHP" "$PLUGIN/scripts/release.php"
+    echo "PWM Fan Control stopped"
+}
+
+case "$1" in
+    start)    start ;;
+    stop)     stop ;;
+    restart)  stop; start ;;
+    status)   if running; then echo "running (pid $(cat "$PIDFILE"))"; else echo "stopped"; exit 1; fi ;;
+    watchdog)
+        # Called by cron every minute while fan control is enabled
+        if ! running; then
+            logger -t "$NAME" "Service was not running, restarting it"
+            start >/dev/null
+        else
+            # The service writes its status on every check (at most every 30s). If it hasn't
+            # for 90s it is stuck, e.g. on a hanging driver: restart it.
+            now=$(date +%s)
+            last=$(stat -c %Y "$STATUS" 2>/dev/null || stat -c %Y "$PIDFILE" 2>/dev/null || echo "$now")
+            if (( now - last > 90 )); then
+                logger -t "$NAME" "Service stopped responding, restarting it"
+                stop >/dev/null
+                start >/dev/null
+            fi
+        fi
+        ;;
+    *) echo "Usage: $0 start|stop|restart|status|watchdog"; exit 1 ;;
+esac

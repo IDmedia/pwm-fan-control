@@ -1,0 +1,79 @@
+/* PWM Fan Control - uses currentColor so it follows every Unraid theme */
+#pfc { --pfc-accent: #f0820a; --pfc-error: #d9534f; --pfc-ok: #3c9a4d; --pfc-info: #3b82f6; }
+#pfc .pfc-hidden { display: none !important; }
+#pfc .pfc-muted { opacity: .65; }
+#pfc .pfc-small { font-size: .85em; }
+#pfc .pfc-narrow { width: 70px; }
+#pfc .pfc-error-text { color: var(--pfc-error); }
+
+#pfc .pfc-banner { margin: 10px 0; padding: 10px 14px; border-left: 4px solid var(--pfc-error); background: rgba(217, 83, 79, .1); }
+#pfc .pfc-banner-warn { border-color: var(--pfc-accent); background: rgba(240, 130, 10, .1); }
+#pfc .pfc-banner-info { border-color: var(--pfc-info); background: rgba(59, 130, 246, .1); }
+
+#pfc .pfc-applybar {
+  position: sticky; top: 0; z-index: 20; display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  margin: 10px 0; padding: 8px 14px; border: 1px solid var(--pfc-accent); border-radius: 4px;
+  background: var(--pfc-bar-bg, rgba(240, 130, 10, .15)); backdrop-filter: blur(6px);
+}
+#pfc .pfc-applybar span { margin-right: auto; }
+#pfc .pfc-applybar button { margin: 0; }
+
+#pfc .pfc-status { display: flex; flex-wrap: wrap; gap: 12px; margin: 12px 0 18px; }
+#pfc .pfc-stat {
+  flex: 1 1 200px; padding: 10px 14px; border: 1px solid rgba(128, 128, 128, .3); border-radius: 4px;
+  display: flex; flex-direction: column; gap: 4px;
+}
+#pfc .pfc-stat-label { font-size: .85em; opacity: .65; text-transform: uppercase; letter-spacing: .03em; }
+#pfc .pfc-stat-value { font-size: 1.4em; font-weight: bold; }
+
+#pfc .pfc-table-wrap { overflow-x: auto; }
+#pfc .pfc-table { width: 100%; border-collapse: collapse; margin: 6px 0 12px; }
+#pfc .pfc-table th { text-align: left; font-weight: normal; opacity: .65; padding: 6px 8px; border-bottom: 1px solid rgba(128, 128, 128, .35); white-space: nowrap; }
+#pfc .pfc-table td { padding: 6px 8px; border-bottom: 1px solid rgba(128, 128, 128, .15); vertical-align: middle; }
+#pfc .pfc-table input[type=text] { width: 100%; min-width: 140px; max-width: 240px; margin: 0; }
+#pfc .pfc-table input[type=number] { margin: 0; }
+#pfc .pfc-table select, #pfc .pfc-table button { margin: 0; }
+#pfc .pfc-active-row td { background: rgba(240, 130, 10, .12); }
+#pfc .pfc-dim td { opacity: .5; }
+#pfc .pfc-hot { color: var(--pfc-error); }
+#pfc .pfc-icon-btn { min-width: 0; padding: 4px 8px; }
+
+#pfc .pfc-group { margin: 12px 0 22px; padding: 12px 16px; border: 1px solid rgba(128, 128, 128, .35); border-radius: 6px; }
+#pfc .pfc-group-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+#pfc .pfc-group-head .pfc-g-name { font-size: 1.15em; font-weight: bold; width: 240px; margin: 0; }
+#pfc .pfc-group-head label { white-space: nowrap; }
+#pfc .pfc-group-head .pfc-g-delete { margin: 0 0 0 auto; }
+#pfc .pfc-group-section { margin-top: 12px; }
+#pfc .pfc-group-label { font-weight: bold; margin-bottom: 6px; }
+#pfc .pfc-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+#pfc .pfc-chip { padding: 4px 10px; border: 1px solid rgba(128, 128, 128, .4); border-radius: 14px; cursor: pointer; white-space: nowrap; }
+#pfc .pfc-chip input { margin: 0 4px 0 0; vertical-align: middle; }
+#pfc .pfc-chip-on { border-color: var(--pfc-accent); background: rgba(240, 130, 10, .12); }
+#pfc .pfc-chip-off { opacity: .5; cursor: default; }
+#pfc .pfc-bind-table { max-width: 1000px; }
+#pfc .pfc-swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 8px; vertical-align: middle; }
+#pfc .pfc-swatch-lg { width: 6px; height: 28px; margin: 0; }
+#pfc .pfc-g-addsrc { margin: 0; max-width: 100%; }
+
+#pfc .pfc-identify { margin: 0 0 18px; padding: 12px 14px; border: 1px solid var(--pfc-accent); border-radius: 4px; }
+#pfc .pfc-identify-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+#pfc .pfc-identify-head button { margin: 0 0 0 auto; }
+#pfc .pfc-progress { height: 6px; margin: 10px 0; background: rgba(128, 128, 128, .2); border-radius: 3px; overflow: hidden; }
+#pfc .pfc-progress div { height: 100%; background: var(--pfc-accent); transition: width .9s linear; }
+#pfc .pfc-identify-table { max-width: 720px; }
+#pfc .pfc-reacted td { color: var(--pfc-ok); font-weight: bold; }
+
+#pfc .pfc-charts { display: flex; flex-wrap: wrap; gap: 18px; margin-top: 12px; }
+#pfc .pfc-chart-box { flex: 1 1 380px; min-width: 0; }
+#pfc .pfc-chart-title { margin-bottom: 4px; }
+#pfc .pfc-chart { width: 100%; height: auto; display: block; }
+#pfc .pfc-grid { stroke: currentColor; stroke-opacity: .12; }
+#pfc .pfc-axis { fill: currentColor; fill-opacity: .65; font-size: 11px; }
+#pfc .pfc-line { fill: none; stroke-width: 2.5; stroke-linejoin: round; stroke-linecap: round; }
+#pfc .pfc-line-thin { stroke-width: 1.6; }
+#pfc .pfc-line-fan { stroke: currentColor; stroke-width: 2.5; }
+#pfc .pfc-now { stroke: #fff; stroke-width: 2; }
+#pfc .pfc-legend { font-size: .9em; opacity: .8; margin-top: 4px; }
+#pfc .pfc-key { display: inline-block; width: 14px; height: 3px; margin: 0 4px 3px 0; vertical-align: middle; }
+#pfc .pfc-key-fan { background: currentColor; }
+#pfc .pfc-checks label { margin-right: 14px; white-space: nowrap; }

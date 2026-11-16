@@ -1,0 +1,11 @@
+# Unraid runs these on Linux: always use LF line endings
+*.sh   text eol=lf
+*.php  text eol=lf
+*.page text eol=lf
+*.plg  text eol=lf
+*.js   text eol=lf
+*.css  text eol=lf
+*.md   text eol=lf
+source/emhttp/scripts/rc.* text eol=lf
+.gitattributes text eol=lf
+*.png  binary

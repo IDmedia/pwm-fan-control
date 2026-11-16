@@ -1,0 +1,57 @@
+Menu="Dashboard:0"
+Cond="version_compare(parse_ini_file('/etc/unraid-version')['version'],'6.12.0-beta6', '>')"
+---
+<?php
+$pluginname = 'pwm.fan.control';
+$mytiles[$pluginname]['column2'] = <<<'EOT'
+<tbody id="pfc-tile" title="PWM Fan Control">
+<tr><td>
+<i class="fa fa-snowflake-o f32"></i>
+<div class="section">PWM Fan Control<br>
+<span id="pfc-tile-status">Loading...</span></div>
+<a href="/Settings/PWMFanControl" title="Fan settings"><i class="fa fa-fw fa-cog control"></i></a>
+</td></tr>
+<tr><td>
+<div id="pfc-tile-groups" style="display:flex;flex-wrap:wrap;gap:6px 18px;padding:2px 0 8px"></div>
+<div id="pfc-tile-fans" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:10px 16px;padding:4px 0"></div>
+</td></tr>
+<script>
+(function () {
+  var API = '/plugins/pwm.fan.control/include/api.php';
+  function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+  function update() {
+    $.getJSON(API, { action: 'state' }).done(function (s) {
+      var live = s.running && s.status;
+      $('#pfc-tile-status').text(live ? 'Running' : (s.config.enabled ? 'Not running' : 'Fan control disabled'));
+
+      // Groups: name, speed and what drives it
+      var groups = s.config.groups.map(function (g) {
+        var st = live ? s.status.groups[g.id] : null;
+        if (!st) return '';
+        return '<div title="' + esc(st.reason) + '"><b>' + esc(g.name) + '</b> ' + st.percent + '%</div>';
+      }).join('');
+      $('#pfc-tile-groups').html(groups);
+
+      // One entry per RPM sensor, named after its fan output when paired
+      var pairedBy = {}, owner = {};
+      s.config.groups.forEach(function (g) { g.fans.forEach(function (f) { owner[f] = g.name; }); });
+      s.pwm.forEach(function (p) { if (p.rpm_key && p.rpm_key !== 'none') pairedBy[p.rpm_key] = p; });
+      var items = [];
+      s.rpm.forEach(function (r) {
+        var p = pairedBy[r.key];
+        var name = (p && p.label) || r.label || r.driver_label || ('Fan ' + r.index);
+        if (!r.rpm && !(p && p.label) && !r.label) return; // hide empty, unnamed headers
+        var extra = p && p.value != null ? ' · ' + Math.round(p.value * 100 / 255) + '%' : '';
+        var icon = p && owner[p.key] ? ' <i class="fa fa-snowflake-o" title="Controlled by ' + esc(owner[p.key]) + '"></i>' : '';
+        items.push('<div><div>' + esc(name) + icon + '</div><div style="opacity:.75">' + (r.rpm == null ? 'n/a' : r.rpm + ' RPM') + esc(extra) + '</div></div>');
+      });
+      $('#pfc-tile-fans').html(items.length ? items.join('') : '<div style="opacity:.75">No fans found</div>');
+    });
+  }
+  update();
+  setInterval(update, 5000);
+})();
+</script>
+</tbody>
+EOT;
+?>
