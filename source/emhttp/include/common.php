@@ -43,6 +43,7 @@ const PFC_NOTIFY     = '/usr/local/emhttp/webGui/scripts/notify';
 const PFC_UPDATE_CRON = '/usr/local/sbin/update_cron';
 const PFC_CMDLINE    = '/proc/cmdline';
 const PFC_MODULES    = '/sys/module';
+const PFC_UPTIME     = '/proc/uptime';
 const PFC_DMESG      = 'dmesg';
 const PFC_MODPROBE   = 'modprobe';
 
@@ -123,6 +124,12 @@ function pfc_notify_limited(string $key, string $subject, string $description, i
 
 function pfc_pid_alive($pid): bool {
     return is_numeric($pid) && (int)$pid > 0 && is_dir('/proc/' . (int)$pid);
+}
+
+/** Seconds since the server booted (a large number when unknown). */
+function pfc_uptime(): float {
+    $up = explode(' ', trim((string)@file_get_contents(PFC_UPTIME)))[0] ?? '';
+    return is_numeric($up) ? (float)$up : PHP_INT_MAX;
 }
 
 /** PWM value (0-255) as a percentage. */

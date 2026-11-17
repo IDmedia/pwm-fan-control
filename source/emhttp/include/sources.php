@@ -44,6 +44,13 @@ function pfc_parity_running(): bool {
     return is_array($var) && (int)trim((string)($var['mdResync'] ?? '0'), '"') > 0;
 }
 
+/** Whether the array is started. Unknown (no var.ini) counts as started. */
+function pfc_array_started(): bool {
+    $var = @parse_ini_file(PFC_EMHTTP . '/var.ini');
+    if (!is_array($var) || !isset($var['mdState'])) return true;
+    return trim((string)$var['mdState'], '"') === 'STARTED';
+}
+
 /**
  * Nvidia GPUs via nvidia-smi. Returns ['available' => bool, 'error' => ?string, 'gpus' => [...]].
  *
@@ -134,6 +141,8 @@ function pfc_read_sources(array $cfg, array $hw, array $fans, ?array $disks = nu
     if (!$included) { $src['state'] = 'error'; $src['detail'] = 'no disks are monitored'; }
     elseif ($cfg['array']['parity_full_speed'] && pfc_parity_running()) { $src['state'] = 'parity'; $src['detail'] = 'parity check/rebuild running'; }
     elseif (!$active) { $src['state'] = 'idle'; $src['detail'] = 'all disks spun down'; }
+    // A stopped array (e.g. an encrypted array waiting for its passphrase) has no temperatures: like spun down
+    elseif (!$hot && !pfc_array_started()) { $src['state'] = 'idle'; $src['detail'] = 'array is stopped'; }
     elseif (!$hot) { $src['state'] = 'error'; $src['detail'] = 'no disk temperature available'; }
     $sources['array'] = $src;
 

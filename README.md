@@ -136,7 +136,9 @@ A failure makes fans run faster, never slower.
 | A source can't be read once (a sensor glitch) | Its previous reading is used for that one check. |
 | A source can't be read on two checks in a row (sensor missing, `nvidia-smi` fails, no disk temperature) | The groups using it run at full speed. A warning is shown on the page and logged. |
 | `nvidia-smi` hangs, for example after a GPU or driver crash | `nvidia-smi` runs in the background and is never waited on, and a run is stopped after 5 seconds. If no fresh reading arrives for 20 seconds (or 3 checks, whichever is longer), the GPU counts as unreadable. Groups that don't use the GPU keep working normally. |
-| The Nvidia driver is still loading at boot | Groups that follow a GPU run at full speed until it is ready. |
+| The Nvidia driver is still loading at boot | Groups that follow a GPU run at full speed until it is ready. No alerts are sent in the first 5 minutes after boot. |
+| A GPU or sensor is gone (Nvidia driver missing after an Unraid update, sensor driver not loaded) | The groups using it run at full speed, with a warning and an alert saying which source is missing. |
+| The array is stopped (for example an encrypted array waiting for its passphrase) | The array disks source counts as spun down: its groups run at their spun-down speed, without a warning. |
 | An error inside the service | Every controlled fan runs at full speed, the error is logged, and the next check tries again. |
 | The service crashes or freezes | A crash sets every controlled fan to full speed and sends an alert right away. A watchdog checks every minute and restarts the service, and sends an alert when it had to. Crash and watchdog alerts together are sent at most once an hour. A service that hasn't updated its status for 90 seconds counts as frozen. |
 | A fan in a group disappears | Warning, with the likely reason: the chip is gone (driver not loaded, ACPI conflict, see the *Hardware check*) or the chip is there but not this output (hardware or BIOS changed). The other fans keep working. |
@@ -153,6 +155,8 @@ than a minute also sends an Unraid **alert** notification (red), and a normal no
 - A problem only counts as resolved once it has been gone for 2 minutes, so a problem that comes and goes stays one
   problem.
 - The same problem is alerted at most once every 4 hours, also when it was resolved in between.
+- No alerts in the first 5 minutes after boot, while drivers load and the array starts. A problem that is still
+  there after that is alerted.
 - Restarting the service (or saving settings) doesn't alert again. After a reboot, a problem that still exists is
   alerted once more.
 

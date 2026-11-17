@@ -4,6 +4,9 @@
 - Warns when a fan stops spinning (0 RPM) while it should run, and when another program changes a fan's speed
 - Problems are sent as Unraid alert notifications when they last more than a minute, a crash or watchdog restart right away, and a notice when resolved
 - Notifications don't flood: one alert per problem, resolved only after 2 minutes without it, the same problem at most every 4 hours, no repeat after a service restart, crash and watchdog alerts at most once an hour
+- A temperature source that can't be read or is gone (e.g. Nvidia driver missing after an update) now shows a warning and sends an alert; before, its fans silently ran at full speed
+- A stopped array counts as spun down instead of unreadable
+- No alerts in the first 5 minutes after boot, while drivers load and the array starts
 - Warns when a fan runs much faster or slower than its speed test measured, which usually means fans were moved to other headers
 - Missing fans say why: the chip is gone (driver not loaded, ACPI conflict) or only that output (hardware or BIOS changed)
 - Hardware check on the settings page: fan driver, fan outputs, ACPI resource conflicts and whether acpi_enforce_resources=lax is needed

@@ -34,6 +34,7 @@ final class PfcController {
     private const NOTIFY_AFTER   = 60;    // seconds a warning has to persist before a notification
     private const RESOLVE_SECONDS = 120;  // a warning has to be gone this long to count as resolved
     private const REALERT_AFTER  = 14400; // the same warning is alerted at most once in 4 hours
+    private const BOOT_GRACE     = 300;   // no alerts in the first minutes after boot (drivers, array still starting)
 
     private ?array $cfg = null;
     private ?string $cfgHash = null;
@@ -212,6 +213,7 @@ final class PfcController {
         $demand = $this->cfgErrors
             ? ['pwm' => PFC_FAILSAFE_PWM, 'reason' => 'Invalid configuration, running at full speed', 'source' => null, 'demands' => []]
             : pfc_group_demand($g, $sources);
+        if ($g['fans']) $this->checkSources($g, $sources, $warnings);
 
         // Keep the highest demand of the last <ramp_down> seconds
         $this->windows[$gid][] = [$now, $demand['pwm']];
@@ -261,6 +263,37 @@ final class PfcController {
             'demand' => $demand['pwm'], 'reason' => $demand['reason'], 'source' => $demand['source'],
             'demands' => $demand['demands'], 'slow_down_in' => $slowDownIn, 'fans' => $count,
         ];
+    }
+
+    /**
+     * Sources of a group that can't be read (after the retry) or no longer exist. The group already runs
+     * at full speed then; this makes sure it doesn't go unnoticed, e.g. when the Nvidia driver is gone
+     * after an Unraid update. The text has no live values, warnings are tracked by their text.
+     */
+    private function checkSources(array $g, array $sources, array &$warnings): void {
+        foreach ($g['sources'] as $b) {
+            $id = $b['source'];
+            $s = $sources[$id] ?? null;
+            if ($s && $s['state'] !== 'error') continue;
+            $label = (string)($this->fans['temp'][$id]['label'] ?? '');
+            $name = $s ? pfc_source_name($s) : ($label !== '' ? $label : $this->lastKnownName($id));
+            if (!$s) {
+                $why = strpos($id, 'nvidia:') === 0 ? 'Is the Nvidia driver loaded and the GPU still installed?' : 'Is its sensor driver loaded?';
+                $warnings[] = "Temperature source \"$name\" of \"{$g['name']}\" was not found, its fans run at full speed. $why";
+            } else {
+                $warnings[] = "Temperature source \"$name\" of \"{$g['name']}\" can't be read ({$s['detail']}), its fans run at full speed.";
+            }
+        }
+    }
+
+    /** A readable name for a source that is gone: the GPU name nvidia-smi last reported, or its id. */
+    private function lastKnownName(string $id): string {
+        if (strpos($id, 'nvidia:') === 0) {
+            foreach (pfc_read_json(PFC_NV_CACHE, [])['gpus'] ?? [] as $gpu) {
+                if ('nvidia:' . ($gpu['uuid'] ?? '') === $id) return "GPU {$gpu['index']}: {$gpu['name']}";
+            }
+        }
+        return strpos($id, 'nvidia:') === 0 ? 'GPU ' . substr($id, 7) : $id; // no name known (e.g. after a reboot)
     }
 
     private function fanName(string $key, array $hw): string {
@@ -351,6 +384,7 @@ final class PfcController {
     /**
      * Logs warnings and sends Unraid notifications, without flooding:
      *   - a warning has to last NOTIFY_AFTER seconds before an alert is sent, and is alerted once,
+     *   - no alerts in the first BOOT_GRACE seconds after boot, while drivers and the array start,
      *   - it only counts as resolved once it has been gone for RESOLVE_SECONDS, so a problem that comes
      *     and goes stays one problem (one alert, one "resolved" notice),
      *   - the same warning is not alerted again within REALERT_AFTER of its last alert,
@@ -367,7 +401,9 @@ final class PfcController {
                 $e = ['since' => $now, 'gone' => null, 'handled' => false, 'alerted' => false];
             }
             $e['gone'] = null;
-            if (!$e['handled'] && $now - $e['since'] >= self::NOTIFY_AFTER) {
+            // During boot the Nvidia driver may still be loading and the array not started yet: warnings are shown,
+            // alerts wait until BOOT_GRACE (and are sent then if the problem is still there)
+            if (!$e['handled'] && $now - $e['since'] >= self::NOTIFY_AFTER && pfc_uptime() >= self::BOOT_GRACE) {
                 $e['handled'] = true;
                 if ($now - ($a['sent'][$w] ?? 0) >= self::REALERT_AFTER) {
                     pfc_notify('Fan problem', $w, 'alert');
