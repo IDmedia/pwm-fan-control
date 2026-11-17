@@ -2,13 +2,25 @@
 <!DOCTYPE PLUGIN [
 <!ENTITY name      "pwm.fan.control">
 <!ENTITY author    "Benjamin Krause">
-<!ENTITY version   "2026.11.16">
+<!ENTITY version   "2026.11.17">
 <!ENTITY pluginURL "https://git.int.idmedia.no/idmedia/unraid/pwm-fan-control/raw/branch/main/pwm.fan.control.plg">
 <!ENTITY emhttp    "/usr/local/emhttp/plugins/&name;">
 ]>
 <PLUGIN name="&name;" author="&author;" version="&version;" pluginURL="&pluginURL;" min="6.12.0" icon="snowflake-o" launch="Settings/PWMFanControl">
 
 <CHANGES>
+###2026.11.17
+- Speed test: measures the RPM of a fan from 100% down to 0%, shows where it stops and the speed it needs to start again
+- Warns when a group's min speed is below the speed one of its fans needs to start
+- Warns when a fan stops spinning (0 RPM) while it should run, and when another program changes a fan's speed
+- Unraid notifications for problems that last more than a minute, and when they are resolved
+- A single failed temperature reading no longer sends fans to full speed; two in a row still do
+- An error in the service, or a crash, now runs the fans at full speed instead of leaving them at their last speed
+- Disk temperature sensors of the kernel (drivetemp) are no longer read, so disks can spin down
+- Dashboard tile uses a lighter request and shows warnings
+- Shows when a fan header is in DC mode
+- Settings and fan names are only written to the flash drive when they change
+
 ###2026.11.16
 - First release of PWM Fan Control, replacing the unreleased Array Fan Control plugin
 - Fan groups: every group follows one or more temperature sources, the highest speed wins
@@ -70,6 +82,8 @@ $pfc_v = @filemtime("/usr/local/emhttp$pfc_dir/js/pfc.js");
   <p class="pfc-muted">
     Click <b>Identify</b> to slow a fan down and spin it up to full speed, then watch or listen to see which fan reacts.
     The RPM sensor that reacts is paired with the output automatically. Give each fan a name, then add it to a group above.
+    <b>Speed test</b> measures the RPM from 100% down to 0%, and shows the speed a fan stops at and the speed it needs to
+    start again. With a paired RPM sensor, a fan that stops spinning while it should run is reported as a warning.
   </p>
   <div class="pfc-table-wrap">
     <table class="pfc-table" id="pfc-pwm-table">
@@ -77,7 +91,7 @@ $pfc_v = @filemtime("/usr/local/emhttp$pfc_dir/js/pfc.js");
       <tbody><tr><td colspan="7" class="pfc-muted">Loading...</td></tr></tbody>
     </table>
   </div>
-  <div id="pfc-identify" class="pfc-identify pfc-hidden"></div>
+  <div id="pfc-fantest" class="pfc-fantest pfc-hidden"></div>
 
   <div id="pfc-rpm-section" class="pfc-hidden">
     <div class="title"><span class="left"><i class="fa fa-circle-o-notch title"></i>Other fan sensors</span></div>
@@ -141,9 +155,13 @@ $pfc_v = @filemtime("/usr/local/emhttp$pfc_dir/js/pfc.js");
     </dd></dl>
     <dl><dt>Log speed changes to syslog:</dt><dd>
       <select data-cfg="log_changes" data-type="bool"><option value="true">Yes</option><option value="false">No</option></select>
-      <span class="pfc-muted">Only changes of 5% or more are logged.</span>
+      <span class="pfc-muted">Changes of 5% or more, and every switch to or from full speed.</span>
     </dd></dl>
-    <dl><dt>Identify: slow speed (PWM 0-255):</dt><dd><input type="number" min="0" max="255" class="pfc-narrow" data-cfg="identify.low_pwm" data-type="int"> <span class="pfc-muted">0 stops most fans.</span></dd></dl>
+    <dl><dt>Send notifications:</dt><dd>
+      <select data-cfg="notify" data-type="bool"><option value="true">Yes</option><option value="false">No</option></select>
+      <span class="pfc-muted">An Unraid notification when a problem lasts more than a minute (a fan stopped, a source can't be read, ...) and when it is resolved.</span>
+    </dd></dl>
+    <dl><dt>Identify: slow speed:</dt><dd><input type="number" min="0" max="100" class="pfc-narrow" data-cfg="identify.low_pwm" data-type="pct"> % <span class="pfc-muted">0% stops most fans.</span></dd></dl>
     <dl><dt>Identify: seconds per step:</dt><dd><input type="number" min="3" max="30" class="pfc-narrow" data-cfg="identify.seconds" data-type="int"></dd></dl>
     <dl><dt>&nbsp;</dt><dd>
       <button type="button" class="pfc-apply">Apply</button>
@@ -179,22 +197,27 @@ $mytiles[$pluginname]['column2'] = <<<'EOT'
   var API = '/plugins/pwm.fan.control/include/api.php';
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
   function update() {
-    $.getJSON(API, { action: 'state' }).done(function (s) {
-      var live = s.running && s.status;
-      $('#pfc-tile-status').text(live ? 'Running' : (s.config.enabled ? 'Not running' : 'Fan control disabled'));
+    $.getJSON(API, { action: 'tile' }).done(function (s) {
+      var live = s.status;
+      var warnings = live ? live.warnings.length : 0;
+      $('#pfc-tile-status').html(live
+        ? 'Running' + (warnings ? ' · <a href="/Settings/PWMFanControl" style="color:#d9534f" title="' + esc(live.warnings.join('\n')) + '">' + warnings + ' warning' + (warnings === 1 ? '' : 's') + '</a>' : '')
+        : (s.enabled ? '<span style="color:#d9534f">Not running</span>' : 'Fan control disabled'));
 
       // Groups: name, speed and what drives it
-      var groups = s.config.groups.map(function (g) {
-        var st = live ? s.status.groups[g.id] : null;
-        if (!st) return '';
-        return '<div title="' + esc(st.reason) + '"><b>' + esc(g.name) + '</b> ' + st.percent + '%</div>';
-      }).join('');
-      $('#pfc-tile-groups').html(groups);
+      var names = {};
+      s.groups.forEach(function (g) { names[g.id] = g.name; });
+      $('#pfc-tile-groups').html(s.groups.map(function (g) {
+        var st = live && live.groups[g.id];
+        return st ? '<div title="' + esc(st.reason) + '"><b>' + esc(g.name) + '</b> ' + st.percent + '%</div>' : '';
+      }).join(''));
 
       // One entry per RPM sensor, named after its fan output when paired
       var pairedBy = {}, owner = {};
-      s.config.groups.forEach(function (g) { g.fans.forEach(function (f) { owner[f] = g.name; }); });
-      s.pwm.forEach(function (p) { if (p.rpm_key && p.rpm_key !== 'none') pairedBy[p.rpm_key] = p; });
+      s.pwm.forEach(function (p) {
+        if (p.rpm_key && p.rpm_key !== 'none') pairedBy[p.rpm_key] = p;
+        if (p.group) owner[p.key] = names[p.group];
+      });
       var items = [];
       s.rpm.forEach(function (r) {
         var p = pairedBy[r.key];
@@ -282,12 +305,12 @@ Controls motherboard PWM fans based on temperatures: array disks, Nvidia GPUs, C
 #pfc .pfc-swatch-lg { width: 6px; height: 28px; margin: 0; }
 #pfc .pfc-g-addsrc { margin: 0; max-width: 100%; }
 
-#pfc .pfc-identify { margin: 0 0 18px; padding: 12px 14px; border: 1px solid var(--pfc-accent); border-radius: 4px; }
-#pfc .pfc-identify-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-#pfc .pfc-identify-head button { margin: 0 0 0 auto; }
+#pfc .pfc-fantest { margin: 0 0 18px; padding: 12px 14px; border: 1px solid var(--pfc-accent); border-radius: 4px; }
+#pfc .pfc-fantest-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+#pfc .pfc-fantest-head button { margin: 0 0 0 auto; }
 #pfc .pfc-progress { height: 6px; margin: 10px 0; background: rgba(128, 128, 128, .2); border-radius: 3px; overflow: hidden; }
 #pfc .pfc-progress div { height: 100%; background: var(--pfc-accent); transition: width .9s linear; }
-#pfc .pfc-identify-table { max-width: 720px; }
+#pfc .pfc-fantest-table { max-width: 720px; }
 #pfc .pfc-reacted td { color: var(--pfc-ok); font-weight: bold; }
 
 #pfc .pfc-charts { display: flex; flex-wrap: wrap; gap: 18px; margin-top: 12px; }
@@ -304,6 +327,14 @@ Controls motherboard PWM fans based on temperatures: array disks, Nvidia GPUs, C
 #pfc .pfc-key { display: inline-block; width: 14px; height: 3px; margin: 0 4px 3px 0; vertical-align: middle; }
 #pfc .pfc-key-fan { background: currentColor; }
 #pfc .pfc-checks label { margin-right: 14px; white-space: nowrap; }
+#pfc .pfc-nowrap { white-space: nowrap; }
+#pfc .pfc-nowrap button + button { margin-left: 6px; }
+#pfc .pfc-warn-text { color: var(--pfc-accent); }
+#pfc .pfc-warn-text:empty { display: none; }
+#pfc .pfc-fantest-body { display: flex; flex-wrap: wrap; gap: 18px; align-items: flex-start; }
+#pfc .pfc-fantest-body .pfc-fantest-table { flex: 1 1 380px; }
+#pfc .pfc-speed-chart { flex: 1 1 380px; max-width: 560px; }
+#pfc .pfc-marker { stroke: var(--pfc-accent); stroke-dasharray: 4 4; }
 ]]></INLINE>
 </FILE>
 
@@ -311,13 +342,14 @@ Controls motherboard PWM fans based on temperatures: array disks, Nvidia GPUs, C
 <INLINE><![CDATA[<?php
 /*
  * PWM Fan Control - AJAX endpoint for the settings page and dashboard tile.
- * GET  ?action=state[&history=1]          live data
+ * GET  ?action=state[&history=1]          everything the settings page shows
+ * GET  ?action=tile                       what the dashboard tile shows (cheap: no nvidia-smi, no disks)
  * POST action=save_config, config=<json>  settings and fan groups
  * POST action=save_fan                    name / paired RPM sensor of a PWM output
  * POST action=save_rpm_label              name of an RPM sensor
  * POST action=save_source_label           name of a temperature source
- * POST action=identify, key=...           identify a PWM output
- * POST action=identify_stop               stop identifying and restore the fan
+ * POST action=fantest, key=..., mode=identify|speed
+ * POST action=fantest_stop                stop the test and restore the fan
  * (POST requests are protected by Unraid's csrf_token check.)
  */
 require_once __DIR__ . '/common.php';
@@ -334,6 +366,13 @@ function pfc_fail(string $msg, int $code = 400): void {
     pfc_reply(['ok' => false, 'error' => $msg], $code);
 }
 
+/** The service status, only while the service is actually running. */
+function pfc_live_status(): ?array {
+    $pid = pfc_daemon_pid();
+    $status = $pid ? pfc_read_json(PFC_STATUS) : null;
+    return is_array($status) ? $status : null;
+}
+
 $migrated = pfc_migrate_old();
 $action = $_POST['action'] ?? $_GET['action'] ?? 'state';
 
@@ -346,27 +385,7 @@ case 'state':
     $disks = pfc_read_disks($cfg);
     $nv = pfc_nvidia();
     $sources = pfc_read_sources($cfg, $hw, $fans, $disks, $nv);
-    $owner = pfc_controlled_keys($cfg);
 
-    $pwms = [];
-    foreach ($hw['pwm'] as $key => $p) {
-        $f = $fans['pwm'][$key] ?? [];
-        $rpm_key = $f['rpm'] ?? $p['guess_rpm'];
-        $p['label'] = (string)($f['label'] ?? '');
-        $p['group'] = $owner[$key] ?? null;
-        $p['rpm_key'] = $rpm_key;
-        $p['rpm_confirmed'] = isset($f['rpm']);
-        $p['rpm'] = $rpm_key !== null ? ($hw['rpm'][$rpm_key]['rpm'] ?? null) : null;
-        $p['enable_name'] = pfc_enable_mode_name($p['enable']);
-        unset($p['path']);
-        $pwms[] = $p;
-    }
-    $rpms = [];
-    foreach ($hw['rpm'] as $key => $r) {
-        $r['label'] = (string)($fans['rpm'][$key]['label'] ?? '');
-        unset($r['path']);
-        $rpms[] = $r;
-    }
     // Groups as they would run right now, without the slow-down delay
     $preview = [];
     foreach ($cfg['groups'] as $g) $preview[$g['id']] = pfc_group_demand($g, $sources);
@@ -377,17 +396,30 @@ case 'state':
         'config'     => $cfg,
         'errors'     => pfc_validate_config($cfg),
         'running'    => pfc_daemon_pid() !== null,
-        'pwm'        => $pwms,
-        'rpm'        => $rpms,
+        'status'     => pfc_live_status(),
+        'pwm'        => pfc_fan_list($cfg, $fans, $hw),
+        'rpm'        => pfc_rpm_list($fans, $hw),
         'sources'    => array_values($sources),
         'disks'      => $disks,
         'nvidia'     => ['available' => $nv['available'], 'error' => $nv['error']],
         'preview'    => $preview,
-        'status'     => pfc_read_json(PFC_STATUS),
         'history'    => isset($_GET['history']) ? pfc_read_json(PFC_HISTORY, []) : null,
-        'identify'   => pfc_read_json(PFC_IDENTIFY),
+        'fantest'    => pfc_read_json(PFC_FANTEST),
         'old_plugin' => is_dir(PFC_OLD_PLUGIN),
         'migrated'   => $migrated,
+    ]);
+
+case 'tile':
+    $cfg = pfc_load_config();
+    $fans = pfc_load_fans();
+    $hw = pfc_scan_hwmon();
+    pfc_reply([
+        'ok'      => true,
+        'enabled' => $cfg['enabled'],
+        'groups'  => array_map(fn($g) => ['id' => $g['id'], 'name' => $g['name']], $cfg['groups']),
+        'status'  => pfc_live_status(),
+        'pwm'     => array_map(fn($p) => array_intersect_key($p, array_flip(['key', 'label', 'rpm_key', 'value', 'group'])), pfc_fan_list($cfg, $fans, $hw)),
+        'rpm'     => pfc_rpm_list($fans, $hw),
     ]);
 
 case 'save_config':
@@ -399,14 +431,13 @@ case 'save_config':
     if ($cfg['enabled'] && is_dir(PFC_OLD_PLUGIN)) {
         pfc_fail('Remove the old "Array Fan Control" plugin first, otherwise both plugins will fight over the fans.');
     }
-    // Only known fans can be added to a group
+    // Only known fans can be added to a group (fans already in a group may be missing right now)
     $hw = pfc_scan_hwmon();
-    $old = pfc_load_config();
-    $known = pfc_controlled_keys($old);
+    $known = pfc_controlled_keys(pfc_load_config());
     foreach ($cfg['groups'] as $g) foreach ($g['fans'] as $key) {
         if (!isset($hw['pwm'][$key]) && !isset($known[$key])) pfc_fail("Unknown fan: $key");
     }
-    pfc_save_config($cfg);
+    if (!pfc_save_config($cfg)) pfc_fail('Could not write the settings to the flash drive.', 500);
     pfc_apply_service($cfg);
     pfc_reply(['ok' => true, 'running' => pfc_daemon_pid() !== null]);
 
@@ -419,12 +450,14 @@ case 'save_fan':
     if (isset($_POST['label'])) $f['label'] = pfc_clean_label($_POST['label']);
     if (isset($_POST['rpm'])) {
         $rpm = (string)$_POST['rpm'];
+        if ($rpm !== '' && $rpm !== 'none' && !isset($hw['rpm'][$rpm])) pfc_fail('Unknown RPM sensor.');
         if ($rpm === '') unset($f['rpm']);
-        elseif ($rpm === 'none' || isset($hw['rpm'][$rpm])) $f['rpm'] = $rpm;
-        else pfc_fail('Unknown RPM sensor.');
+        else $f['rpm'] = $rpm;
+        // A speed test measured with another sensor no longer applies
+        if (isset($f['test']['rpm_key']) && $f['test']['rpm_key'] !== $rpm) unset($f['test']);
     }
     $fans['pwm'][$key] = $f;
-    pfc_save_fans($fans);
+    if (!pfc_save_fans($fans)) pfc_fail('Could not write to the flash drive.', 500);
     pfc_reply(['ok' => true]);
 
 case 'save_rpm_label':
@@ -435,32 +468,27 @@ case 'save_source_label':
         if (!isset(pfc_scan_hwmon()['rpm'][$key])) pfc_fail('Unknown RPM sensor.');
         $section = 'rpm';
     } else {
-        if (!preg_match('/^(array|nvidia:GPU-[\w-]+|hwmon:[^\s]+\/temp\d+)$/', $key)) pfc_fail('Unknown temperature source.');
+        if (!preg_match('/^(array|nvidia:GPU-[\w-]+|hwmon:\S+\/temp\d+)$/', $key)) pfc_fail('Unknown temperature source.');
         $section = 'temp';
     }
     $label = pfc_clean_label($_POST['label'] ?? '');
     if ($label === '') unset($fans[$section][$key]);
     else $fans[$section][$key] = ['label' => $label];
-    pfc_save_fans($fans);
+    if (!pfc_save_fans($fans)) pfc_fail('Could not write to the flash drive.', 500);
     pfc_reply(['ok' => true]);
 
-case 'identify':
+case 'fantest':
     $key = (string)($_POST['key'] ?? '');
+    $mode = (string)($_POST['mode'] ?? 'identify');
+    if (!in_array($mode, ['identify', 'speed'], true)) pfc_fail('Unknown test.');
     $hw = pfc_scan_hwmon();
     if (!isset($hw['pwm'][$key])) pfc_fail('Unknown fan.');
     if (!$hw['pwm'][$key]['writable']) pfc_fail('This PWM output is not writable.');
-    $running = pfc_identify_running();
-    $pending = pfc_read_json(PFC_IDENTIFY);
-    if ($running || (($pending['phase'] ?? '') === 'starting' && time() - ($pending['time'] ?? 0) < 5)) {
-        pfc_fail('Another fan is being identified right now.');
-    }
-    @mkdir(PFC_RUN, 0777, true);
-    @unlink(PFC_STOP_FLAG);
-    pfc_write_json(PFC_IDENTIFY, ['key' => $key, 'phase' => 'starting', 'pid' => 0, 'time' => time()]);
-    exec('setsid nohup /usr/bin/php ' . escapeshellarg(PFC_PLUGIN . '/scripts/identify.php') . ' ' . escapeshellarg($key) . ' >/dev/null 2>&1 < /dev/null &');
+    $error = pfc_fantest_start($key, $mode);
+    if ($error) pfc_fail($error);
     pfc_reply(['ok' => true]);
 
-case 'identify_stop':
+case 'fantest_stop':
     @mkdir(PFC_RUN, 0777, true);
     touch(PFC_STOP_FLAG);
     pfc_reply(['ok' => true]);
@@ -474,17 +502,23 @@ default:
 <FILE Name="&emhttp;/include/common.php">
 <INLINE><![CDATA[<?php
 /*
- * PWM Fan Control - shared helpers for the web UI, API, daemon and scripts.
+ * PWM Fan Control - shared code for the web UI, API, service and scripts.
  *
  * Concepts
  *   Fan     A PWM output on a motherboard/controller chip ("<chip>@<device>/pwmN"). Keys use the chip name
  *           instead of /sys/class/hwmon/hwmonX, because the hwmonX number can change between boots.
  *   Source  Something that reports a temperature:
- *             "array"                  hottest included array/pool/unassigned disk
+ *             "array"                  hottest monitored array/pool/unassigned disk
  *             "nvidia:<GPU uuid>"      an Nvidia GPU (via nvidia-smi)
  *             "hwmon:<chip>/tempN"     any kernel temperature sensor (CPU, motherboard, NVMe, ...)
  *   Group   A set of fans following one or more sources. Every source has its own curve and the
  *           group runs at the highest speed any of its sources asks for.
+ *
+ * Files
+ *   config.php    settings and fan groups (config.json)
+ *   hardware.php  hwmon scan, fan names (fans.json), handing fans back to the BIOS
+ *   sources.php   temperature sources and fan curves
+ *   service.php   starting/stopping the service, fan tests in progress
  */
 
 const PFC_NAME       = 'pwm.fan.control';
@@ -496,14 +530,16 @@ const PFC_CRON       = PFC_BOOT . '/' . PFC_NAME . '.cron';
 const PFC_RUN        = '/tmp/' . PFC_NAME;
 const PFC_STATUS     = PFC_RUN . '/status.json';
 const PFC_HISTORY    = PFC_RUN . '/history.json';
-const PFC_IDENTIFY   = PFC_RUN . '/identify.json';
-const PFC_STOP_FLAG  = PFC_RUN . '/identify.stop';
+const PFC_FANTEST    = PFC_RUN . '/fantest.json';
+const PFC_STOP_FLAG  = PFC_RUN . '/fantest.stop';
 const PFC_NV_CACHE   = PFC_RUN . '/nvidia.json';
 const PFC_PIDFILE    = '/var/run/' . PFC_NAME . '.pid';
 const PFC_RC         = PFC_PLUGIN . '/scripts/rc.pwmfancontrol';
 const PFC_HWMON      = '/sys/class/hwmon';
 const PFC_NVIDIA_SMI = '/usr/bin/nvidia-smi';
 const PFC_EMHTTP     = '/var/local/emhttp';
+const PFC_NOTIFY     = '/usr/local/emhttp/webGui/scripts/notify';
+const PFC_UPDATE_CRON = '/usr/local/sbin/update_cron';
 
 const PFC_OLD_BOOT   = '/boot/config/plugins/array.fan.control';
 const PFC_OLD_PLUGIN = '/usr/local/emhttp/plugins/array.fan.control';
@@ -513,13 +549,99 @@ const PFC_HISTORY_EVERY = 60;    // seconds between samples (24 hours in total)
 const PFC_FAILSAFE_PWM  = 255;
 const PFC_INTERVALS     = [2, 3, 5, 10, 15, 30];
 
-/* ------------------------------------------------------------------ config */
+require_once __DIR__ . '/config.php';
+require_once __DIR__ . '/hardware.php';
+require_once __DIR__ . '/sources.php';
+require_once __DIR__ . '/service.php';
+
+/* ------------------------------------------------------------------ helpers */
+
+function pfc_read_int(string $file): ?int {
+    $v = @file_get_contents($file);
+    return ($v === false || !is_numeric(trim($v))) ? null : (int)trim($v);
+}
+
+function pfc_read_json(string $file, $default = null) {
+    if (!is_file($file)) return $default;
+    $data = json_decode((string)@file_get_contents($file), true);
+    return $data ?? $default;
+}
+
+/**
+ * Writes a file so readers never see it half written. With $only_if_changed the write is skipped
+ * when the content is the same, which saves writes to the flash drive.
+ */
+function pfc_write_atomic(string $file, string $content, bool $only_if_changed = false): bool {
+    if ($only_if_changed && is_file($file) && @file_get_contents($file) === $content) return true;
+    @mkdir(dirname($file), 0777, true);
+    $tmp = $file . '.tmp' . getmypid();
+    if (@file_put_contents($tmp, $content) === false) return false;
+    return @rename($tmp, $file);
+}
+
+/** JSON in /tmp (status, history, ...): compact. */
+function pfc_write_json(string $file, $data): bool {
+    return pfc_write_atomic($file, json_encode($data, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
+}
+
+/** JSON on the flash drive (settings): readable, and only written when it changed. */
+function pfc_write_flash_json(string $file, $data): bool {
+    return pfc_write_atomic($file, json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) . "\n", true);
+}
+
+function pfc_log(string $msg): void {
+    exec('logger -t ' . escapeshellarg(PFC_NAME) . ' ' . escapeshellarg($msg));
+}
+
+/** Unraid notification. $level: normal|warning|alert */
+function pfc_notify(string $subject, string $description, string $level = 'warning'): void {
+    if (!is_executable(PFC_NOTIFY)) return;
+    exec(escapeshellarg(PFC_NOTIFY) . ' -e ' . escapeshellarg('PWM Fan Control') . ' -s ' . escapeshellarg($subject)
+        . ' -d ' . escapeshellarg($description) . ' -i ' . escapeshellarg($level) . ' >/dev/null 2>&1');
+}
+
+function pfc_pid_alive($pid): bool {
+    return is_numeric($pid) && (int)$pid > 0 && is_dir('/proc/' . (int)$pid);
+}
+
+/** PWM value (0-255) as a percentage. */
+function pfc_pct($pwm): int {
+    return (int)round((int)$pwm * 100 / 255);
+}
+
+function pfc_fmt_temp($t): string {
+    return $t === null ? 'n/a' : rtrim(rtrim(number_format((float)$t, 1, '.', ''), '0'), '.') . '°C';
+}
+
+/** Trims a user supplied name to plain text, max 40 characters. */
+function pfc_clean_label($label): string {
+    $label = trim(strip_tags((string)$label));
+    return function_exists('mb_substr') ? mb_substr($label, 0, 40) : substr($label, 0, 40);
+}
+]]></INLINE>
+</FILE>
+
+<FILE Name="&emhttp;/include/config.php">
+<INLINE><![CDATA[<?php
+/*
+ * PWM Fan Control - settings and fan groups (config.json on the flash drive).
+ *
+ * {
+ *   "enabled": false, "interval": 5, "log_changes": true, "notify": true,
+ *   "identify": {"low_pwm": 0, "seconds": 8},
+ *   "array": {"include": {"Parity": true, ...}, "exclude": ["disk3"], "parity_full_speed": true},
+ *   "groups": [{"id": "g1a2b", "name": "Array fans", "fans": ["<fan key>"], "ramp_down": 30,
+ *               "sources": [{"source": "array", "low": 35, "high": 48, "min_pwm": 170, "max_pwm": 255, "idle_pwm": 170}]}]
+ * }
+ * Speeds are stored as PWM values (0-255). The web UI shows them as percentages.
+ */
 
 function pfc_default_config(): array {
     return [
         'enabled'     => false,
         'interval'    => 5,
         'log_changes' => true,
+        'notify'      => true,
         'identify'    => ['low_pwm' => 0, 'seconds' => 8],
         'array'       => [
             'include' => ['Parity' => true, 'Data' => true, 'Cache' => true, 'Unassigned' => true, 'Flash' => false],
@@ -539,28 +661,27 @@ function pfc_default_binding(string $source): array {
 
 function pfc_load_config(): array {
     $saved = pfc_read_json(PFC_CONFIG);
-    if (!is_array($saved)) return pfc_default_config();
-    return pfc_normalize_config($saved);
+    return is_array($saved) ? pfc_normalize_config($saved) : pfc_default_config();
 }
 
 /** Fixes types and fills in defaults, so the rest of the code can trust the structure. */
 function pfc_normalize_config(array $cfg): array {
     $out = pfc_default_config();
-    if (array_key_exists('enabled', $cfg)) $out['enabled'] = !empty($cfg['enabled']);
+    foreach (['enabled', 'log_changes', 'notify'] as $k) {
+        if (array_key_exists($k, $cfg)) $out[$k] = !empty($cfg[$k]);
+    }
     if (isset($cfg['interval'])) $out['interval'] = (int)$cfg['interval'];
-    if (array_key_exists('log_changes', $cfg)) $out['log_changes'] = !empty($cfg['log_changes']);
-    if (isset($cfg['identify']['low_pwm'])) $out['identify']['low_pwm'] = (int)$cfg['identify']['low_pwm'];
-    if (isset($cfg['identify']['seconds'])) $out['identify']['seconds'] = (int)$cfg['identify']['seconds'];
-    foreach ($out['array']['include'] as $type => $default) {
-        if (isset($cfg['array']['include']) && is_array($cfg['array']['include'])) {
-            $out['array']['include'][$type] = !empty($cfg['array']['include'][$type]);
-        }
+    foreach (['low_pwm', 'seconds'] as $k) {
+        if (isset($cfg['identify'][$k]) && is_numeric($cfg['identify'][$k])) $out['identify'][$k] = (int)$cfg['identify'][$k];
     }
-    $exclude = $cfg['array']['exclude'] ?? [];
-    $out['array']['exclude'] = array_values(array_filter(array_map('strval', is_array($exclude) ? $exclude : [])));
-    if (isset($cfg['array']) && array_key_exists('parity_full_speed', $cfg['array'])) {
-        $out['array']['parity_full_speed'] = !empty($cfg['array']['parity_full_speed']);
+
+    $array = is_array($cfg['array'] ?? null) ? $cfg['array'] : [];
+    if (is_array($array['include'] ?? null)) {
+        foreach ($out['array']['include'] as $type => $_) $out['array']['include'][$type] = !empty($array['include'][$type]);
     }
+    $exclude = is_array($array['exclude'] ?? null) ? $array['exclude'] : [];
+    $out['array']['exclude'] = array_values(array_unique(array_filter(array_map('strval', $exclude), 'strlen')));
+    if (array_key_exists('parity_full_speed', $array)) $out['array']['parity_full_speed'] = !empty($array['parity_full_speed']);
 
     foreach (is_array($cfg['groups'] ?? null) ? $cfg['groups'] : [] as $g) {
         if (!is_array($g)) continue;
@@ -573,10 +694,10 @@ function pfc_normalize_config(array $cfg): array {
         ];
         foreach (is_array($g['sources'] ?? null) ? $g['sources'] : [] as $b) {
             if (!is_array($b) || empty($b['source'])) continue;
-            $d = pfc_default_binding((string)$b['source']);
+            $defaults = pfc_default_binding((string)$b['source']);
             $binding = ['source' => (string)$b['source']];
             foreach (['low', 'high', 'min_pwm', 'max_pwm', 'idle_pwm'] as $k) {
-                if (array_key_exists($k, $d)) $binding[$k] = isset($b[$k]) && is_numeric($b[$k]) ? (int)$b[$k] : $d[$k];
+                if (array_key_exists($k, $defaults)) $binding[$k] = isset($b[$k]) && is_numeric($b[$k]) ? (int)round((float)$b[$k]) : $defaults[$k];
             }
             $group['sources'][] = $binding;
         }
@@ -589,7 +710,7 @@ function pfc_normalize_config(array $cfg): array {
 function pfc_validate_config(array $cfg): array {
     $errors = [];
     if (!in_array($cfg['interval'], PFC_INTERVALS, true)) $errors[] = 'Check interval must be one of ' . implode(', ', PFC_INTERVALS) . ' seconds.';
-    if ($cfg['identify']['low_pwm'] < 0 || $cfg['identify']['low_pwm'] > 255) $errors[] = 'Identify speed must be between 0 and 255.';
+    if ($cfg['identify']['low_pwm'] < 0 || $cfg['identify']['low_pwm'] > 255) $errors[] = 'Identify speed must be between 0% and 100%.';
     if ($cfg['identify']['seconds'] < 3 || $cfg['identify']['seconds'] > 30) $errors[] = 'Identify duration must be between 3 and 30 seconds.';
 
     $owner = [];
@@ -609,17 +730,19 @@ function pfc_validate_config(array $cfg): array {
         foreach ($g['sources'] as $b) {
             if (isset($seen[$b['source']])) $errors[] = "\"$n\": the same source is added twice.";
             $seen[$b['source']] = true;
-            if ($b['low'] >= $b['high']) $errors[] = "\"$n\": low temperature ({$b['low']}) must be below high temperature ({$b['high']}).";
-            if ($b['min_pwm'] < 0 || $b['max_pwm'] > 255 || $b['min_pwm'] >= $b['max_pwm']) $errors[] = "\"$n\": minimum speed ({$b['min_pwm']}) must be below maximum speed ({$b['max_pwm']}), within 0-255.";
-            if (isset($b['idle_pwm']) && ($b['idle_pwm'] < 0 || $b['idle_pwm'] > 255)) $errors[] = "\"$n\": spun-down speed must be between 0 and 255.";
+            if ($b['low'] < -20 || $b['high'] > 150) $errors[] = "\"$n\": temperatures must be between -20 and 150 °C.";
+            if ($b['low'] >= $b['high']) $errors[] = "\"$n\": low temperature ({$b['low']} °C) must be below high temperature ({$b['high']} °C).";
+            if ($b['min_pwm'] < 0 || $b['max_pwm'] > 255 || $b['min_pwm'] > $b['max_pwm']) {
+                $errors[] = "\"$n\": min speed (" . pfc_pct($b['min_pwm']) . '%) must not be above max speed (' . pfc_pct($b['max_pwm']) . '%), within 0-100%.';
+            }
+            if (isset($b['idle_pwm']) && ($b['idle_pwm'] < 0 || $b['idle_pwm'] > 255)) $errors[] = "\"$n\": spun-down speed must be between 0% and 100%.";
         }
     }
-    return $errors;
+    return array_values(array_unique($errors));
 }
 
-function pfc_save_config(array $cfg): void {
-    @mkdir(PFC_BOOT, 0777, true);
-    pfc_write_atomic(PFC_CONFIG, json_encode($cfg, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
+function pfc_save_config(array $cfg): bool {
+    return pfc_write_flash_json(PFC_CONFIG, $cfg);
 }
 
 function pfc_new_id(): string {
@@ -631,6 +754,12 @@ function pfc_controlled_keys(array $cfg): array {
     $keys = [];
     foreach ($cfg['groups'] as $g) foreach ($g['fans'] as $f) $keys[$f] = $g['id'];
     return $keys;
+}
+
+/** Whether any group follows a GPU (only then nvidia-smi has to run). */
+function pfc_uses_nvidia(array $cfg): bool {
+    foreach ($cfg['groups'] as $g) foreach ($g['sources'] as $b) if (strpos($b['source'], 'nvidia:') === 0) return true;
+    return false;
 }
 
 /**
@@ -658,10 +787,10 @@ function pfc_migrate_old(): bool {
         'groups' => [],
     ];
 
-    $fans = ['pwm' => [], 'rpm' => $old_fans['rpm'] ?? [], 'temp' => []];
+    $fans = ['pwm' => [], 'rpm' => is_array($old_fans['rpm'] ?? null) ? $old_fans['rpm'] : [], 'temp' => []];
     $controlled = [];
-    foreach ($old_fans['pwm'] ?? [] as $key => $f) {
-        $fans['pwm'][$key] = array_intersect_key($f, ['label' => 1, 'rpm' => 1, 'orig_enable' => 1]);
+    foreach (is_array($old_fans['pwm'] ?? null) ? $old_fans['pwm'] : [] as $key => $f) {
+        $fans['pwm'][$key] = array_intersect_key((array)$f, ['label' => 1, 'rpm' => 1, 'orig_enable' => 1]);
         if (!empty($f['controlled'])) $controlled[] = $key;
     }
     $cfg['groups'][] = [
@@ -675,17 +804,365 @@ function pfc_migrate_old(): bool {
     pfc_save_fans($fans);
     return true;
 }
+]]></INLINE>
+</FILE>
 
-/* -------------------------------------------------------------------- fans */
+<FILE Name="&emhttp;/include/controller.php">
+<INLINE><![CDATA[<?php
+/*
+ * PWM Fan Control - the control loop run by scripts/daemon.php.
+ *
+ * Every <interval> seconds tick() reads the temperature sources, works out the speed for every fan
+ * group and applies it. Speeding up happens right away. Slowing down only happens once the lower
+ * speed has been wanted for <ramp_down> seconds (the group keeps the highest speed asked for in that
+ * window), so short temperature dips don't make the fans pulse.
+ *
+ * Safety rules
+ *   - A source that can't be read on two checks in a row makes its groups run at full speed.
+ *   - An error in the loop itself sets every controlled fan to full speed and is retried next check.
+ *   - A crash of the service leaves the fans at full speed until the watchdog restarts it.
+ *   - Only a deliberate stop (disabled, removed, signal) hands the fans back to the BIOS.
+ *
+ * It also watches for problems and reports them as warnings (status page, syslog, notifications):
+ *   - a fan that stays at 0 RPM while it should spin (needs a confirmed RPM sensor),
+ *   - a fan whose speed or mode is changed by something else (another fan control),
+ *   - fans that can't be found or written.
+ */
+final class PfcController {
+    private const SOURCE_RETRIES = 1;     // failed reads of a source tolerated before full speed
+    private const STALL_SECONDS  = 20;    // 0 RPM for this long while it should spin = stalled
+    private const STALL_MIN_PWM  = 77;    // 30%: below this, without a speed test, 0 RPM may be normal
+    private const CONFLICT_TICKS = 2;     // checks in a row a fan has to be changed by someone else
+    private const NOTIFY_AFTER   = 60;    // seconds a warning has to persist before a notification
+    private const RESOLVE_TICKS  = 3;     // checks in a row a warning has to be gone to count as resolved
 
-/**
- * fans.json: user names and pairings.
+    private ?array $cfg = null;
+    private ?string $cfgHash = null;
+    private array $cfgErrors = [];
+    private array $fans = [];
+    private ?string $fansHash = null;
+
+    private array $windows = [];      // group id => [[time, pwm], ...] for the slow-down delay
+    private array $logged = [];       // group id => last logged pwm
+    private array $lastGood = [];     // source id => last good reading
+    private array $failures = [];     // source id => failed reads in a row
+    private array $written = [];      // fan key => [pwm we set, enable we set]
+    private array $conflicts = [];    // fan key => checks in a row changed by someone else
+    private array $zeroSince = [];    // fan key => time it was first seen at 0 RPM while it should spin
+    private array $warnSince = [];    // warning => first seen
+    private array $notified = [];     // warning => true once a notification was sent
+    private array $warnMissing = [];  // warning => checks in a row it was gone
+    private int $lastHistory = 0;
+    private bool $failsafe = false;   // fans were set to full speed after an error in the loop
+
+    public bool $running = true;
+
+    /** Runs until stopped or disabled, then hands the fans back to the BIOS. */
+    public function run(): void {
+        pfc_log('Started');
+        while ($this->running) {
+            $start = microtime(true);
+            try {
+                if (!$this->tick()) break;
+                $this->failsafe = false;
+            } catch (Throwable $e) {
+                $this->onError($e);
+            }
+            $interval = $this->cfg['interval'] ?? 5;
+            $until = $start + $interval;
+            // Sleep until the next check, waking up regularly to notice a stop signal
+            while ($this->running && microtime(true) < $until) usleep((int)min(250000, max(1000, ($until - microtime(true)) * 1e6)));
+        }
+        pfc_release_all($this->cfg);
+        @unlink(PFC_STATUS);
+        pfc_log('Stopped, fans handed back to the BIOS');
+    }
+
+    /** One check. Returns false when fan control was disabled. */
+    public function tick(): bool {
+        $now = time();
+        clearstatcache();
+        if (!$this->reload()) return false;
+
+        $cfg = $this->cfg;
+        $hw = pfc_scan_hwmon();
+        $nv = pfc_uses_nvidia($cfg) ? pfc_nvidia(max(20, 3 * $cfg['interval'])) : ['available' => false, 'error' => null, 'gpus' => []];
+        $sources = $this->withRetries(pfc_read_sources($cfg, $hw, $this->fans, null, $nv));
+        $test = pfc_fantest_running();
+
+        $warnings = $nv['error'] ? [$nv['error']] : [];
+        $fansChanged = false;
+        $groups = [];
+        foreach ($cfg['groups'] as $g) {
+            $groups[$g['id']] = $this->controlGroup($g, $sources, $hw, $test, $now, $warnings, $fansChanged);
+        }
+        if ($fansChanged) $this->saveFans();
+
+        $this->report($warnings, $now);
+        $used = $this->usedSources($sources);
+        pfc_write_json(PFC_STATUS, [
+            'time' => $now, 'pid' => getmypid(), 'interval' => $cfg['interval'],
+            'groups' => $groups, 'sources' => $used, 'warnings' => array_values(array_unique($warnings)),
+        ]);
+        if ($now - $this->lastHistory >= PFC_HISTORY_EVERY) {
+            $this->lastHistory = $now;
+            $this->recordHistory($now, $used, $groups);
+        }
+        return true;
+    }
+
+    /** Sets every fan we control to full speed. Used after an error and when the service crashes. */
+    public function failsafe(): void {
+        $hw = pfc_scan_hwmon();
+        $keys = $this->cfg ? array_keys(pfc_controlled_keys($this->cfg)) : [];
+        foreach ($this->fans['pwm'] ?? [] as $key => $f) if (isset($f['orig_enable'])) $keys[] = $key;
+        foreach (array_unique($keys) as $key) {
+            $fan = $hw['pwm'][$key] ?? null;
+            if (!$fan) continue;
+            if ($fan['enable'] !== null && $fan['enable'] !== 1) @file_put_contents("{$fan['path']}_enable", '1');
+            @file_put_contents($fan['path'], (string)PFC_FAILSAFE_PWM);
+        }
+    }
+
+    /* ------------------------------------------------------------- config */
+
+    /** (Re)loads the config and fan names when they changed. Returns false when disabled. */
+    private function reload(): bool {
+        // Compare content hashes, not mtimes: two saves within one second have the same mtime
+        $hash = (string)@md5_file(PFC_CONFIG);
+        if ($hash !== $this->cfgHash) {
+            $new = pfc_load_config();
+            if (!$new['enabled']) return false;
+            $errors = pfc_validate_config($new);
+            if ($errors) pfc_log('Invalid configuration, all fans run at full speed: ' . implode(' ', $errors));
+
+            // Fans that are no longer in any group go back to the BIOS
+            if ($this->cfg) {
+                $gone = array_diff_key(pfc_controlled_keys($this->cfg), pfc_controlled_keys($new));
+                if ($gone) {
+                    $fans = pfc_load_fans();
+                    $hw = pfc_scan_hwmon();
+                    foreach (array_keys($gone) as $key) {
+                        pfc_release_fan($fans, $key, $hw);
+                        unset($this->written[$key], $this->conflicts[$key], $this->zeroSince[$key]);
+                    }
+                    pfc_save_fans($fans);
+                    $this->fansHash = null;
+                }
+            }
+            $this->cfgHash = $hash;
+            $this->cfg = $new;
+            $this->cfgErrors = $errors;
+            $this->windows = [];
+        }
+        $hash = (string)@md5_file(PFC_FANS);
+        if ($hash !== $this->fansHash) {
+            $this->fansHash = $hash;
+            $this->fans = pfc_load_fans();
+        }
+        return true;
+    }
+
+    private function saveFans(): void {
+        pfc_save_fans($this->fans);
+        $this->fansHash = (string)@md5_file(PFC_FANS);
+    }
+
+    /* ------------------------------------------------------------ sources */
+
+    /**
+     * A single failed read (a sensor glitch, nvidia-smi failing once) uses the previous reading,
+     * so it doesn't send the fans to full speed for the whole slow-down delay.
+     */
+    private function withRetries(array $sources): array {
+        foreach ($sources as $id => $s) {
+            if ($s['state'] !== 'error') {
+                $this->failures[$id] = 0;
+                $this->lastGood[$id] = $s;
+                continue;
+            }
+            $this->failures[$id] = ($this->failures[$id] ?? 0) + 1;
+            if ($this->failures[$id] <= self::SOURCE_RETRIES && isset($this->lastGood[$id])) {
+                $sources[$id] = ['detail' => 'last reading, ' . $s['detail']] + $this->lastGood[$id];
+            }
+        }
+        return $sources;
+    }
+
+    /** The sources used by a group, for status.json and the history. */
+    private function usedSources(array $sources): array {
+        $used = [];
+        foreach ($this->cfg['groups'] as $g) foreach ($g['sources'] as $b) {
+            $s = $sources[$b['source']] ?? null;
+            $used[$b['source']] = $s
+                ? ['temp' => $s['temp'], 'state' => $s['state'], 'detail' => $s['detail']]
+                : ['temp' => null, 'state' => 'error', 'detail' => 'not available'];
+        }
+        return $used;
+    }
+
+    /* -------------------------------------------------------------- groups */
+
+    private function controlGroup(array $g, array $sources, array $hw, ?array $test, int $now, array &$warnings, bool &$fansChanged): array {
+        $gid = $g['id'];
+        $demand = $this->cfgErrors
+            ? ['pwm' => PFC_FAILSAFE_PWM, 'reason' => 'Invalid configuration, running at full speed', 'source' => null, 'demands' => []]
+            : pfc_group_demand($g, $sources);
+
+        // Keep the highest demand of the last <ramp_down> seconds
+        $this->windows[$gid][] = [$now, $demand['pwm']];
+        $this->windows[$gid] = array_values(array_filter($this->windows[$gid], fn($e) => $e[0] >= $now - $g['ramp_down']));
+        $pwm = max(array_column($this->windows[$gid], 1));
+        $slowDownIn = null;
+        if ($pwm > $demand['pwm']) {
+            $since = 0;
+            foreach ($this->windows[$gid] as $e) if ($e[1] === $pwm) $since = $e[0];
+            $slowDownIn = max(0, $since + $g['ramp_down'] - $now);
+        }
+
+        $count = 0;
+        foreach ($g['fans'] as $key) {
+            $name = $this->fanName($key, $hw);
+            $fan = $hw['pwm'][$key] ?? null;
+            if (!$fan) { $warnings[] = "Fan \"$name\" in \"{$g['name']}\" was not found. Is its sensor driver loaded?"; continue; }
+            if (!$fan['writable']) { $warnings[] = "Fan \"$name\" can't be controlled (not writable)."; continue; }
+            $count++;
+            if ($test && ($test['key'] ?? '') === $key) {
+                // Being tested from the web UI: leave it alone, and don't mistake the test for a conflict
+                unset($this->written[$key], $this->zeroSince[$key]);
+                continue;
+            }
+            $this->checkConflict($fan, $name, $warnings);
+            $error = pfc_drive_fan($this->fans, $fan, $pwm, $fansChanged);
+            if ($error) $warnings[] = "Fan \"$name\": $error.";
+            $this->written[$key] = [$pwm, 1];
+            $this->checkStall($fan, $name, $pwm, $hw, $now, $warnings);
+        }
+
+        // Log meaningful changes only (>= 5%, or entering/leaving full speed)
+        $prev = $this->logged[$gid] ?? null;
+        if ($this->cfg['log_changes'] && $count && ($prev === null || abs($prev - $pwm) >= 13 || ($pwm === 255) !== ($prev === 255))) {
+            pfc_log("{$g['name']}: {$demand['reason']}, fans at " . pfc_pct($pwm) . "% ($pwm)");
+            $this->logged[$gid] = $pwm;
+        }
+
+        return [
+            'id' => $gid, 'name' => $g['name'], 'pwm' => $pwm, 'percent' => pfc_pct($pwm),
+            'demand' => $demand['pwm'], 'reason' => $demand['reason'], 'source' => $demand['source'],
+            'demands' => $demand['demands'], 'slow_down_in' => $slowDownIn, 'fans' => $count,
+        ];
+    }
+
+    private function fanName(string $key, array $hw): string {
+        $label = (string)($this->fans['pwm'][$key]['label'] ?? '');
+        if ($label !== '') return $label;
+        $fan = $hw['pwm'][$key] ?? null;
+        return $fan ? "{$fan['chip']} PWM {$fan['index']}" : $key;
+    }
+
+    /**
+     * Something else changed the speed or mode we set (another fan control, the BIOS/EC).
+     * Some chips round the value they store, so small differences are ignored.
+     */
+    private function checkConflict(array $fan, string $name, array &$warnings): void {
+        $key = $fan['key'];
+        if (!isset($this->written[$key])) return;
+        [$pwm, $enable] = $this->written[$key];
+        $changed = ($fan['value'] !== null && abs($fan['value'] - $pwm) > 5) || ($fan['enable'] !== null && $fan['enable'] !== $enable);
+        $this->conflicts[$key] = $changed ? ($this->conflicts[$key] ?? 0) + 1 : 0;
+        if ($this->conflicts[$key] >= self::CONFLICT_TICKS) {
+            $warnings[] = "Fan \"$name\": its speed keeps being changed by something else. Is another fan control running?";
+        }
+    }
+
+    /** A fan that reports 0 RPM for a while although it should spin. Needs a confirmed RPM sensor. */
+    private function checkStall(array $fan, string $name, int $pwm, array $hw, int $now, array &$warnings): void {
+        $key = $fan['key'];
+        $rpmKey = pfc_confirmed_rpm($this->fans, $key);
+        $rpm = $rpmKey ? ($hw['rpm'][$rpmKey]['rpm'] ?? null) : null;
+        // With a speed test we know where the fan starts, otherwise assume it spins from 30%
+        $t = $this->fans['pwm'][$key]['test'] ?? null;
+        $spinsFrom = is_array($t) && !empty($t['done']) ? ($t['start_pwm'] ?? $t['min_pwm'] ?? 0) : self::STALL_MIN_PWM;
+        if ($rpm === null && $rpmKey && isset($this->zeroSince[$key])) return; // unreadable for a moment: keep counting
+        if ($rpm !== 0 || $pwm < max(1, $spinsFrom)) {
+            unset($this->zeroSince[$key]);
+            return;
+        }
+        $this->zeroSince[$key] = $this->zeroSince[$key] ?? $now;
+        if ($now - $this->zeroSince[$key] >= self::STALL_SECONDS) {
+            $warnings[] = "Fan \"$name\" is not spinning (0 RPM). Check the fan and its cable.";
+        }
+    }
+
+    /* ----------------------------------------------------------- reporting */
+
+    /**
+     * Logs new warnings, and sends a notification for warnings that persist. A warning only counts as
+     * resolved once it is gone for RESOLVE_TICKS checks, so one good reading doesn't restart the clock.
+     */
+    private function report(array $warnings, int $now): void {
+        $current = array_unique($warnings);
+        foreach ($current as $w) {
+            $this->warnMissing[$w] = 0;
+            if (!isset($this->warnSince[$w])) {
+                pfc_log("Warning: $w");
+                $this->warnSince[$w] = $now;
+            }
+            if (empty($this->notified[$w]) && $now - $this->warnSince[$w] >= self::NOTIFY_AFTER) {
+                $this->notified[$w] = true;
+                if ($this->cfg['notify']) pfc_notify('Fan problem', $w, 'warning');
+            }
+        }
+        foreach (array_diff(array_keys($this->warnSince), $current) as $w) {
+            $this->warnMissing[$w] = ($this->warnMissing[$w] ?? 0) + 1;
+            if ($this->warnMissing[$w] < self::RESOLVE_TICKS) continue;
+            if (!empty($this->notified[$w]) && $this->cfg['notify']) pfc_notify('Fan problem resolved', $w, 'normal');
+            pfc_log("Resolved: $w");
+            unset($this->warnSince[$w], $this->notified[$w], $this->warnMissing[$w]);
+        }
+    }
+
+    private function recordHistory(int $now, array $sources, array $groups): void {
+        $history = pfc_read_json(PFC_HISTORY, []);
+        $history[] = [
+            't' => $now,
+            's' => array_map(fn($s) => $s['temp'], $sources),
+            'g' => array_map(fn($g) => $g['pwm'], $groups),
+        ];
+        if (count($history) > PFC_HISTORY_MAX) $history = array_slice($history, -PFC_HISTORY_MAX);
+        pfc_write_json(PFC_HISTORY, $history);
+    }
+
+    /** An error in the loop: run at full speed, tell the user, try again next check. */
+    private function onError(Throwable $e): void {
+        $msg = 'Internal error, fans run at full speed: ' . $e->getMessage() . ' (' . basename($e->getFile()) . ':' . $e->getLine() . ')';
+        if (!$this->failsafe) pfc_log($msg);
+        $this->failsafe = true;
+        $this->written = [];
+        try { $this->failsafe(); } catch (Throwable $ignored) {}
+        pfc_write_json(PFC_STATUS, ['time' => time(), 'pid' => getmypid(), 'interval' => $this->cfg['interval'] ?? 5,
+            'groups' => [], 'sources' => [], 'warnings' => [$msg]]);
+    }
+}
+]]></INLINE>
+</FILE>
+
+<FILE Name="&emhttp;/include/hardware.php">
+<INLINE><![CDATA[<?php
+/*
+ * PWM Fan Control - fans and kernel sensors (/sys/class/hwmon) and fan names (fans.json).
+ *
+ * fans.json on the flash drive:
  * {
- *   "pwm":  { "<fan key>":  { "label": "...", "rpm": "<rpm key>|none", "orig_enable": "5" } },
+ *   "pwm":  { "<fan key>":  { "label": "...", "rpm": "<rpm key>|none", "orig_enable": "5", "test": {...} } },
  *   "rpm":  { "<rpm key>":  { "label": "..." } },
  *   "temp": { "<source id>": { "label": "..." } }
  * }
+ *   rpm          RPM sensor paired with the output, set by Identify, the speed test or by hand
+ *   orig_enable  the BIOS mode of the output before the plugin took it over, restored on release
+ *   test         result of the last speed test, see scripts/fantest.php
  */
+
 function pfc_load_fans(): array {
     $data = pfc_read_json(PFC_FANS, []);
     if (!is_array($data)) $data = [];
@@ -693,9 +1170,8 @@ function pfc_load_fans(): array {
     return $data;
 }
 
-function pfc_save_fans(array $fans): void {
-    @mkdir(PFC_BOOT, 0777, true);
-    pfc_write_atomic(PFC_FANS, json_encode($fans, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
+function pfc_save_fans(array $fans): bool {
+    return pfc_write_flash_json(PFC_FANS, $fans);
 }
 
 /**
@@ -726,15 +1202,19 @@ function pfc_scan_hwmon(): array {
             ];
         }
 
-        foreach (glob("$dir/temp*_input") ?: [] as $file) {
-            if (!preg_match('/\/temp(\d+)_input$/', $file, $m)) continue;
-            $n = (int)$m[1];
-            $milli = pfc_read_int($file);
-            $result['temp']["$chip_id/temp$n"] = [
-                'key' => "$chip_id/temp$n", 'chip' => $chip, 'index' => $n, 'path' => $file,
-                'driver_label' => trim((string)@file_get_contents("$dir/temp{$n}_label")),
-                'temp' => $milli === null ? null : round($milli / 1000, 1),
-            ];
+        // Disk temperatures come from Unraid (Array disks source). Reading drivetemp sensors directly
+        // sends commands to the disks, which can keep them from spinning down.
+        if ($chip !== 'drivetemp') {
+            foreach (glob("$dir/temp*_input") ?: [] as $file) {
+                if (!preg_match('/\/temp(\d+)_input$/', $file, $m)) continue;
+                $n = (int)$m[1];
+                $milli = pfc_read_int($file);
+                $result['temp']["$chip_id/temp$n"] = [
+                    'key' => "$chip_id/temp$n", 'chip' => $chip, 'index' => $n, 'path' => $file,
+                    'driver_label' => trim((string)@file_get_contents("$dir/temp{$n}_label")),
+                    'temp' => $milli === null ? null : round($milli / 1000, 1),
+                ];
+            }
         }
 
         foreach (glob("$dir/pwm*") ?: [] as $file) {
@@ -744,7 +1224,7 @@ function pfc_scan_hwmon(): array {
                 'key' => "$chip_id/pwm$n", 'chip' => $chip, 'index' => $n, 'path' => $file, 'hwmon' => basename($dir),
                 'value'  => pfc_read_int($file),
                 'enable' => is_file("{$file}_enable") ? pfc_read_int("{$file}_enable") : null,
-                'mode'   => is_file("{$file}_mode") ? pfc_read_int("{$file}_mode") : null,
+                'mode'   => is_file("{$file}_mode") ? pfc_read_int("{$file}_mode") : null, // 0 = DC, 1 = PWM
                 'writable'  => is_writable($file),
                 // Most drivers pair pwmN with fanN_input, but this is only a guess
                 'guess_rpm' => isset($result['rpm']["$chip_id/fan$n"]) ? "$chip_id/fan$n" : null,
@@ -761,6 +1241,30 @@ function pfc_enable_mode_name($enable): string {
     return $enable === null ? 'n/a' : ($names[$enable] ?? "Mode $enable");
 }
 
+/** The RPM sensor confirmed for a fan (by Identify, the speed test or by hand), or null. */
+function pfc_confirmed_rpm(array $fans, string $key): ?string {
+    $rpm = $fans['pwm'][$key]['rpm'] ?? null;
+    return is_string($rpm) && $rpm !== 'none' ? $rpm : null;
+}
+
+/**
+ * Switches an output to manual control and sets its speed.
+ * Remembers the BIOS mode in $fans the first time (returns $changed = true then).
+ * Returns null on success, or an error message.
+ */
+function pfc_drive_fan(array &$fans, array $fan, int $pwm, bool &$changed): ?string {
+    $key = $fan['key'];
+    if ($fan['enable'] !== null && $fan['enable'] !== 1) {
+        if (!isset($fans['pwm'][$key]['orig_enable'])) {
+            $fans['pwm'][$key]['orig_enable'] = (string)$fan['enable'];
+            $changed = true;
+        }
+        if (@file_put_contents("{$fan['path']}_enable", '1') === false) return 'could not switch it to manual control';
+    }
+    if ($fan['value'] !== $pwm && @file_put_contents($fan['path'], (string)$pwm) === false) return 'could not set its speed';
+    return null;
+}
+
 /**
  * Puts a fan back under BIOS/driver control (the mode it had before we took it over).
  * Safe to call more than once: a fan that is no longer in manual mode is left alone.
@@ -774,7 +1278,7 @@ function pfc_release_fan(array &$fans, string $key, array $hw): void {
         @file_put_contents("{$fan['path']}_enable", (string)$orig);
     } elseif ($fan['enable'] === null || $fan['enable'] === 1) {
         // Was already manual before we took it, or has no mode: leave it at full speed to be safe
-        @file_put_contents($fan['path'], '255');
+        @file_put_contents($fan['path'], (string)PFC_FAILSAFE_PWM);
     }
 }
 
@@ -789,21 +1293,107 @@ function pfc_release_all(?array $cfg = null): void {
     pfc_save_fans($fans);
 }
 
-/* ----------------------------------------------------------------- sources */
+/** Every PWM output with its name, pairing, group and current RPM, for the web UI. */
+function pfc_fan_list(array $cfg, array $fans, array $hw): array {
+    $owner = pfc_controlled_keys($cfg);
+    $taken = [];  // RPM sensors confirmed for an output can't be another output's guess
+    foreach ($hw['pwm'] as $key => $_) if ($r = pfc_confirmed_rpm($fans, $key)) $taken[$r] = $key;
+    $list = [];
+    foreach ($hw['pwm'] as $key => $p) {
+        $f = $fans['pwm'][$key] ?? [];
+        if ($p['guess_rpm'] !== null && isset($taken[$p['guess_rpm']]) &&$taken[$p['guess_rpm']] !== $key) $p['guess_rpm'] = null;
+        $rpm_key = $f['rpm'] ?? $p['guess_rpm'];
+        unset($p['path']);
+        $list[] = $p + [
+            'label'         => (string)($f['label'] ?? ''),
+            'group'         => $owner[$key] ?? null,
+            'rpm_key'       => $rpm_key,
+            'rpm_confirmed' => isset($f['rpm']),
+            'rpm'           => $rpm_key !== null ? ($hw['rpm'][$rpm_key]['rpm'] ?? null) : null,
+            'enable_name'   => pfc_enable_mode_name($p['enable']),
+            'test'          => $f['test'] ?? null,
+        ];
+    }
+    return $list;
+}
 
-/** Unraid's disks (array, pools and unassigned devices). */
+/** Every RPM sensor with its name, for the web UI. */
+function pfc_rpm_list(array $fans, array $hw): array {
+    $list = [];
+    foreach ($hw['rpm'] as $key => $r) {
+        unset($r['path']);
+        $list[] = $r + ['label' => (string)($fans['rpm'][$key]['label'] ?? '')];
+    }
+    return $list;
+}
+]]></INLINE>
+</FILE>
+
+<FILE Name="&emhttp;/include/service.php">
+<INLINE><![CDATA[<?php
+/*
+ * PWM Fan Control - the background service (scripts/daemon.php) and fan tests (scripts/fantest.php).
+ */
+
+function pfc_daemon_pid(): ?int {
+    $pid = (int)trim((string)@file_get_contents(PFC_PIDFILE));
+    return pfc_pid_alive($pid) ? $pid : null;
+}
+
+/** Starts or stops the service and its watchdog cron job to match the config. */
+function pfc_apply_service(array $cfg): void {
+    if ($cfg['enabled']) {
+        pfc_write_atomic(PFC_CRON, "# PWM Fan Control watchdog (generated, do not edit)\n* * * * * " . PFC_RC . " watchdog >/dev/null 2>&1\n\n", true);
+    } else {
+        @unlink(PFC_CRON);
+    }
+    exec(PFC_UPDATE_CRON . ' >/dev/null 2>&1');
+    exec(PFC_RC . ($cfg['enabled'] ? ' start' : ' stop') . ' >/dev/null 2>&1');
+}
+
+/** The fan test (Identify or speed test) in progress, or null. */
+function pfc_fantest_running(): ?array {
+    $state = pfc_read_json(PFC_FANTEST);
+    if (!is_array($state) || ($state['phase'] ?? '') === 'done') return null;
+    // Just requested by the web UI, the script hasn't written its pid yet
+    if (($state['phase'] ?? '') === 'starting') return time() - ($state['time'] ?? 0) < 10 ? $state : null;
+    return pfc_pid_alive($state['pid'] ?? 0) ? $state : null;
+}
+
+/** Starts scripts/fantest.php in the background. $mode: identify|speed. Returns an error or null. */
+function pfc_fantest_start(string $key, string $mode): ?string {
+    if (pfc_fantest_running()) return 'Another fan test is running right now.';
+    @unlink(PFC_STOP_FLAG);
+    pfc_write_json(PFC_FANTEST, ['key' => $key, 'mode' => $mode, 'phase' => 'starting', 'pid' => 0, 'time' => time()]);
+    exec('setsid nohup /usr/bin/php ' . escapeshellarg(PFC_PLUGIN . '/scripts/fantest.php') . ' ' . escapeshellarg($mode) . ' '
+        . escapeshellarg($key) . ' >/dev/null 2>&1 < /dev/null &');
+    return null;
+}
+]]></INLINE>
+</FILE>
+
+<FILE Name="&emhttp;/include/sources.php">
+<INLINE><![CDATA[<?php
+/*
+ * PWM Fan Control - temperature sources and fan curves.
+ *
+ * A source, as returned by pfc_read_sources():
+ *   ['id', 'type' => array|nvidia|hwmon, 'name' (default name), 'label' (user name), 'temp' => ?float,
+ *    'state' => ok|idle|parity|error, 'detail' => string]
+ */
+
+/** Unraid's disks (array, pools and unassigned devices), with whether the Array disks source uses them. */
 function pfc_read_disks(array $cfg): array {
     $include = $cfg['array']['include'];
     $exclude = $cfg['array']['exclude'];
     $disks = [];
 
-    $sources = [[PFC_EMHTTP . '/disks.ini', null]];
+    $files = [[PFC_EMHTTP . '/disks.ini', null]];
     foreach ([PFC_EMHTTP . '/devs.ini', '/usr/local/emhttp/state/devs.ini'] as $devs) {
-        if (is_file($devs)) { $sources[] = [$devs, 'Unassigned']; break; }
+        if (is_file($devs)) { $files[] = [$devs, 'Unassigned']; break; }
     }
-    foreach ($sources as [$file, $force_type]) {
-        if (!is_file($file)) continue;
-        $ini = @parse_ini_file($file, true);
+    foreach ($files as [$file, $force_type]) {
+        $ini = is_file($file) ? @parse_ini_file($file, true) : false;
         if (!is_array($ini)) continue;
         foreach ($ini as $section => $d) {
             if (!is_array($d)) continue;
@@ -848,7 +1438,8 @@ function pfc_nvidia(int $max_age = 20): array {
     $lock = fopen(PFC_RUN . '/nvidia.lock', 'c');
     if ($lock) flock($lock, LOCK_EX);
 
-    $collect = function () use ($out, $rcf, $pidf) {
+    // Picks up the result of a finished run (nvidia.rc appears when it is done)
+    $collect = function () use ($out, $rcf, $pidf): bool {
         $claim = $rcf . '.' . getmypid();
         if (!@rename($rcf, $claim)) return false;
         $rc = (int)trim((string)@file_get_contents($claim));
@@ -873,7 +1464,7 @@ function pfc_nvidia(int $max_age = 20): array {
         @unlink($pidf);
         return true;
     };
-    $launch = function () use ($out, $rcf, $pidf) {
+    $launch = function () use ($out, $rcf, $pidf): void {
         $cmd = '(timeout -k 2 5 ' . escapeshellarg(PFC_NVIDIA_SMI) . ' --query-gpu=index,uuid,name,temperature.gpu --format=csv,noheader,nounits'
              . ' > ' . escapeshellarg($out) . ' 2>&1; echo $? > ' . escapeshellarg("$rcf.tmp") . '; mv ' . escapeshellarg("$rcf.tmp") . ' ' . escapeshellarg($rcf) . ')'
              . ' > /dev/null 2>&1 < /dev/null & echo $!';
@@ -903,16 +1494,12 @@ function pfc_nvidia(int $max_age = 20): array {
     return $result;
 }
 
-/**
- * Reads every available temperature source.
- * Each source: ['id', 'type', 'name' (default name), 'label' (user name), 'temp' (?float),
- *               'state' => ok|idle|parity|error, 'detail' => string]
- */
+/** Reads every available temperature source. Pass $disks/$nv when already read. */
 function pfc_read_sources(array $cfg, array $hw, array $fans, ?array $disks = null, ?array $nv = null): array {
     $sources = [];
     $label = fn($id) => (string)($fans['temp'][$id]['label'] ?? '');
 
-    // Array: hottest included, spun-up disk
+    // Array: hottest monitored, spun-up disk
     $disks = $disks ?? pfc_read_disks($cfg);
     $included = array_filter($disks, fn($d) => $d['included']);
     $active = array_filter($included, fn($d) => !$d['spundown']);
@@ -948,7 +1535,11 @@ function pfc_read_sources(array $cfg, array $hw, array $fans, ?array $disks = nu
     return $sources;
 }
 
-/* ----------------------------------------------------------------- curves */
+function pfc_source_name(array $src): string {
+    return $src['label'] !== '' ? $src['label'] : $src['name'];
+}
+
+/* ------------------------------------------------------------------ curves */
 
 /** Linear curve: min_pwm at or below low, max_pwm at or above high. */
 function pfc_curve_pwm(float $temp, array $b): int {
@@ -958,8 +1549,9 @@ function pfc_curve_pwm(float $temp, array $b): int {
 }
 
 /** Speed one source binding asks for. Returns ['pwm' => int, 'reason' => string]. */
-function pfc_binding_demand(array $b, ?array $src, string $name): array {
-    if (!$src) return ['pwm' => PFC_FAILSAFE_PWM, 'reason' => "$name is not available, running at full speed"];
+function pfc_binding_demand(array $b, ?array $src): array {
+    if (!$src) return ['pwm' => PFC_FAILSAFE_PWM, 'reason' => 'A temperature source is not available, running at full speed'];
+    $name = pfc_source_name($src);
     switch ($src['state']) {
         case 'error':  return ['pwm' => PFC_FAILSAFE_PWM, 'reason' => "$name: {$src['detail']}, running at full speed"];
         case 'parity': return ['pwm' => (int)$b['max_pwm'], 'reason' => "$name: {$src['detail']}"];
@@ -969,91 +1561,19 @@ function pfc_binding_demand(array $b, ?array $src, string $name): array {
 }
 
 /**
- * What a group wants right now (before the slow-down delay).
+ * What a group wants right now (before the slow-down delay): the highest demand of its sources.
  * Returns ['pwm' => int, 'reason' => string, 'source' => ?id, 'demands' => [id => pwm]].
  */
 function pfc_group_demand(array $group, array $sources): array {
     $best = null;
     $demands = [];
     foreach ($group['sources'] as $b) {
-        $src = $sources[$b['source']] ?? null;
-        $d = pfc_binding_demand($b, $src, $src ? pfc_source_name($src) : 'A temperature source');
+        $d = pfc_binding_demand($b, $sources[$b['source']] ?? null);
         $demands[$b['source']] = $d['pwm'];
         if ($best === null || $d['pwm'] > $best['pwm']) $best = $d + ['source' => $b['source']];
     }
     if ($best === null) return ['pwm' => PFC_FAILSAFE_PWM, 'reason' => 'No temperature sources, running at full speed', 'source' => null, 'demands' => []];
     return $best + ['demands' => $demands];
-}
-
-function pfc_source_name(array $src): string {
-    return $src['label'] !== '' ? $src['label'] : $src['name'];
-}
-
-function pfc_fmt_temp($t): string {
-    return $t === null ? 'n/a' : rtrim(rtrim(number_format((float)$t, 1, '.', ''), '0'), '.') . '°C';
-}
-
-/* -------------------------------------------------------------- daemon/cron */
-
-function pfc_daemon_pid(): ?int {
-    $pid = (int)trim((string)@file_get_contents(PFC_PIDFILE));
-    return pfc_pid_alive($pid) ? $pid : null;
-}
-
-/** Starts or stops the daemon and its watchdog cron job to match the config. */
-function pfc_apply_service(array $cfg): void {
-    @mkdir(PFC_BOOT, 0777, true);
-    if ($cfg['enabled']) {
-        file_put_contents(PFC_CRON, "# PWM Fan Control watchdog (generated, do not edit)\n* * * * * " . PFC_RC . " watchdog >/dev/null 2>&1\n\n");
-    } else {
-        @unlink(PFC_CRON);
-    }
-    exec('/usr/local/sbin/update_cron');
-    exec(PFC_RC . ($cfg['enabled'] ? ' start' : ' stop') . ' >/dev/null 2>&1');
-}
-
-/* ------------------------------------------------------------------- misc */
-
-function pfc_read_int(string $file): ?int {
-    $v = @file_get_contents($file);
-    return ($v === false || !is_numeric(trim($v))) ? null : (int)trim($v);
-}
-
-function pfc_read_json(string $file, $default = null) {
-    if (!is_file($file)) return $default;
-    $data = json_decode((string)@file_get_contents($file), true);
-    return $data ?? $default;
-}
-
-function pfc_write_atomic(string $file, string $content): void {
-    $tmp = $file . '.tmp' . getmypid();
-    if (@file_put_contents($tmp, $content) !== false) @rename($tmp, $file);
-}
-
-function pfc_write_json(string $file, $data): void {
-    @mkdir(dirname($file), 0777, true);
-    pfc_write_atomic($file, json_encode($data, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
-}
-
-function pfc_log(string $msg): void {
-    exec('logger -t ' . escapeshellarg(PFC_NAME) . ' ' . escapeshellarg($msg));
-}
-
-function pfc_pid_alive($pid): bool {
-    return is_numeric($pid) && (int)$pid > 0 && is_dir('/proc/' . (int)$pid);
-}
-
-/** The identify run currently in progress, or null. */
-function pfc_identify_running(): ?array {
-    $state = pfc_read_json(PFC_IDENTIFY);
-    if (!is_array($state) || ($state['phase'] ?? '') === 'done') return null;
-    return pfc_pid_alive($state['pid'] ?? 0) ? $state : null;
-}
-
-/** Trims a user supplied name to plain text, max 40 characters. */
-function pfc_clean_label($label): string {
-    $label = trim(strip_tags((string)$label));
-    return function_exists('mb_substr') ? mb_substr($label, 0, 40) : substr($label, 0, 40);
 }
 ]]></INLINE>
 </FILE>
@@ -1077,7 +1597,7 @@ function pfc_clean_label($label): string {
   let pwmSig = '';
   let rpmSig = '';
   let sourceSig = '';
-  let identifyDismissed = null;
+  let testDismissed = null;
   let timer = null;
   let historyTick = 0;
 
@@ -1164,8 +1684,8 @@ function pfc_clean_label($label): string {
 
   function schedule() {
     clearTimeout(timer);
-    const identifying = state && state.identify && state.identify.phase !== 'done';
-    const interval = identifying ? 1000 : Math.max(2000, Math.min(5000, ((state && state.config.interval) || 5) * 1000));
+    const testing = state && state.fantest && state.fantest.phase !== 'done';
+    const interval = testing ? 1000 : Math.max(2000, Math.min(5000, ((state && state.config.interval) || 5) * 1000));
     timer = setTimeout(() => {
       historyTick = (historyTick + 1) % 15;
       load(historyTick === 0);
@@ -1187,7 +1707,7 @@ function pfc_clean_label($label): string {
     updateGroups();
     renderPwmTable();
     renderRpmTable();
-    renderIdentify();
+    renderFanTest();
     renderSources();
     renderDisks();
     fillCfgInputs();
@@ -1288,9 +1808,10 @@ function pfc_clean_label($label): string {
         '<div class="pfc-group-section"><div class="pfc-group-label">Temperature sources</div>' +
           '<div class="pfc-table-wrap"><table class="pfc-table pfc-bind-table"><thead><tr>' +
           '<th>Source</th><th>Low °C</th><th>High °C</th><th>Min speed</th><th>Max speed</th>' + (hasArray ? '<th>All disks spun down</th>' : '') + '<th>Now</th><th>Wants</th><th></th>' +
-          '</tr></thead><tbody>' + (rows || '<tr><td colspan="8" class="pfc-muted">No sources yet. Add one below.</td></tr>') + '</tbody></table></div>' +
+          '</tr></thead><tbody>' + (rows || '<tr><td colspan="9" class="pfc-muted">No sources yet. Add one below.</td></tr>') + '</tbody></table></div>' +
           '<select class="pfc-g-addsrc">' + sourceOptions(g) + '</select>' +
           '<p class="pfc-muted pfc-small">Below <b>Low</b> a source asks for the minimum speed, above <b>High</b> for the maximum speed, and in between for a speed on a straight line.</p>' +
+          '<p class="pfc-g-hint pfc-warn-text pfc-small"></p>' +
         '</div>' +
         '<div class="pfc-charts">' +
           '<div class="pfc-chart-box"><div class="pfc-chart-title">Fan curves</div><svg class="pfc-chart pfc-curve" viewBox="0 0 560 260"></svg></div>' +
@@ -1317,6 +1838,13 @@ function pfc_clean_label($label): string {
       });
       const live = st && st.groups[g.id];
       $g.find('.pfc-g-now').html(live ? 'Now <b>' + live.percent + '%</b>' : '');
+
+      // Fans that may not start again at the lowest speed of this group (from their speed test)
+      const lowest = Math.min(...g.sources.map(b => Math.min(b.min_pwm, b.idle_pwm != null ? b.idle_pwm : 255)));
+      const hints = g.fans.map(pwmByKey).filter(p => { const from = fanSpinsFrom(p); return from != null && lowest > 0 && lowest < from; })
+        .map(p => '"' + (p.label || fanName(p.key)) + '" needs ' + pct(fanSpinsFrom(p)) + '% to start');
+      $g.find('.pfc-g-hint').html(hints.length ? '<i class="fa fa-exclamation-triangle"></i> The lowest speed in this group is ' + pct(lowest) +
+        '%, but ' + esc(hints.join(', ')) + ' (speed test). Below that the fan may stop and not start again until the speed goes up. Set 0% if you want it to stop.' : '');
       drawCurve($g.find('.pfc-curve')[0], g);
       drawHistory($g.find('.pfc-history')[0], g);
     });
@@ -1430,6 +1958,16 @@ function pfc_clean_label($label): string {
     return html;
   }
 
+  /** Short text for a speed test result, e.g. "Stops below 20%, starts at 30%". */
+  function testSummary(t) {
+    if (!t || !t.done) return '';
+    if (t.start_pwm == null) return 'Never stops, ' + t.max_rpm + ' RPM max';
+    return 'Stops below ' + pct(t.min_pwm) + '%, starts at ' + pct(t.start_pwm) + '%';
+  }
+
+  /** Lowest speed at which a fan reliably runs, from its speed test (null without a test). */
+  const fanSpinsFrom = p => (p && p.test && p.test.done ? (p.test.start_pwm != null ? p.test.start_pwm : p.test.min_pwm) : null);
+
   function renderPwmTable() {
     const $tb = $('#pfc-pwm-table tbody');
     if (!state.pwm.length) { $tb.html('<tr><td colspan="7" class="pfc-muted">No controllable fan outputs found.</td></tr>'); pwmSig = ''; return; }
@@ -1439,30 +1977,36 @@ function pfc_clean_label($label): string {
       $tb.html(state.pwm.map(p =>
         '<tr data-key="' + esc(p.key) + '">' +
         '<td><input type="text" class="pfc-label" maxlength="40" placeholder="e.g. GPU intake"></td>' +
-        '<td><span class="pfc-output"></span><br><span class="pfc-muted pfc-small"></span></td>' +
+        '<td><span class="pfc-output"></span><br><span class="pfc-muted pfc-small pfc-path"></span></td>' +
         '<td class="pfc-speed"></td><td class="pfc-setting"></td>' +
         '<td><select class="pfc-rpm">' + rpmOptions(p) + '</select></td>' +
         '<td class="pfc-group-cell"></td>' +
-        '<td><button type="button" class="pfc-identify-btn">Identify</button></td></tr>').join(''));
+        '<td class="pfc-nowrap"><button type="button" class="pfc-test-btn" data-mode="identify" title="Slow the fan down, then run it at full speed">Identify</button>' +
+        '<button type="button" class="pfc-test-btn" data-mode="speed" title="Measure the RPM from 100% down to 0%: where the fan stops and where it starts again">Speed test</button></td></tr>').join(''));
     }
     const owner = {};
     draft.groups.forEach(g => g.fans.forEach(f => { owner[f] = g.name; }));
-    const identifying = state.identify && state.identify.phase !== 'done' ? state.identify.key : null;
+    const testing = state.fantest && state.fantest.phase !== 'done' ? state.fantest.key : null;
 
     state.pwm.forEach(p => {
       const $tr = $tb.find('tr').filter(function () { return this.dataset.key === p.key; });
       const label = $tr.find('.pfc-label')[0];
       if (!focused(label) && !label.dataset.dirty) label.value = p.label;
       $tr.find('.pfc-output').text(p.chip + ' · PWM ' + p.index);
-      $tr.find('.pfc-small').first().text(p.hwmon + '/pwm' + p.index);
+      $tr.find('.pfc-path').text(p.hwmon + '/pwm' + p.index);
       const rpmTxt = p.rpm_key === 'none' ? '-' : (p.rpm == null ? 'n/a' : p.rpm + ' RPM');
-      $tr.find('.pfc-speed').html(esc(rpmTxt) + (p.rpm_key && p.rpm_key !== 'none' && !p.rpm_confirmed ? ' <span class="pfc-muted pfc-small" title="Not confirmed yet. Use Identify to confirm.">(guess)</span>' : ''));
-      $tr.find('.pfc-setting').html(p.value == null ? 'n/a' : esc(pct(p.value) + '% (' + p.value + ')') + '<br><span class="pfc-muted pfc-small">' + esc(p.enable_name) + '</span>');
+      const guess = p.rpm_key && p.rpm_key !== 'none' && !p.rpm_confirmed;
+      const summary = testSummary(p.test);
+      $tr.find('.pfc-speed').html(esc(rpmTxt) +
+        (guess ? ' <span class="pfc-muted pfc-small" title="Not confirmed yet. Use Identify to confirm.">(guess)</span>' : '') +
+        (summary ? '<br><span class="pfc-muted pfc-small" title="Result of the last speed test">' + esc(summary) + '</span>' : ''));
+      $tr.find('.pfc-setting').html(p.value == null ? 'n/a' : esc(pct(p.value) + '% (' + p.value + ')') + '<br><span class="pfc-muted pfc-small">' + esc(p.enable_name) +
+        (p.mode === 0 ? ' · <span class="pfc-error-text" title="This header is in DC mode. Set it to PWM in the BIOS.">DC mode</span>' : '') + '</span>');
       const sel = $tr.find('.pfc-rpm')[0];
       if (!focused(sel)) sel.value = p.rpm_confirmed ? p.rpm_key : '';
       $tr.find('.pfc-group-cell').html(owner[p.key] ? esc(owner[p.key]) : '<span class="pfc-muted">-</span>');
-      $tr.toggleClass('pfc-active-row', identifying === p.key);
-      $tr.find('.pfc-identify-btn').prop('disabled', !!identifying || !p.writable);
+      $tr.toggleClass('pfc-active-row', testing === p.key);
+      $tr.find('.pfc-test-btn').prop('disabled', !!testing || !p.writable);
     });
   }
 
@@ -1487,51 +2031,85 @@ function pfc_clean_label($label): string {
     });
   }
 
-  function renderIdentify() {
-    const id = state.identify;
-    const $box = $('#pfc-identify');
-    if (!id || !id.key || (id.phase === 'done' && identifyDismissed === id.time)) { $box.addClass('pfc-hidden'); return; }
-    const running = id.phase !== 'done';
-    const total = (id.seconds || 1) * 2;
-    const done = (id.samples || []).length;
+  /** The Identify / speed test panel below the fan table. */
+  function renderFanTest() {
+    const ft = state.fantest;
+    const $box = $('#pfc-fantest');
+    if (!ft || !ft.key || (ft.phase === 'done' && testDismissed === ft.time)) { $box.addClass('pfc-hidden'); return; }
+    const running = ft.phase !== 'done';
+    const speed = ft.mode === 'speed';
+    const f = v => (v == null ? '-' : v);
 
-    let html = '<div class="pfc-identify-head"><b>Identifying ' + esc(fanName(id.key)) + '</b> ';
+    let html = '<div class="pfc-fantest-head"><b>' + (speed ? 'Speed test: ' : 'Identifying ') + esc(fanName(ft.key)) + '</b> ';
     if (running) {
-      const step = id.phase === 'low' ? 'Slowing down to ' + pct(id.low_pwm || 0) + '%' : id.phase === 'high' ? 'Full speed' : 'Starting';
-      html += '<span class="pfc-muted">' + esc(step) + '...</span><button type="button" id="pfc-identify-stop">Stop</button>';
+      const step = ft.phase === 'starting' ? 'Starting' :
+        ft.phase === 'low' ? 'Slowing down to ' + pct(ft.low_pwm || 0) + '%' :
+        ft.phase === 'high' ? 'Full speed' :
+        (ft.phase === 'up' ? 'Starting again at ' : 'Running at ') + pct(ft.pwm || 0) + '%';
+      html += '<span class="pfc-muted">' + esc(step) + '...</span><button type="button" id="pfc-fantest-stop">Stop</button>';
     } else {
-      html += '<button type="button" id="pfc-identify-close">Close</button>';
+      html += '<button type="button" id="pfc-fantest-close">Close</button>';
     }
     html += '</div>';
-    if (running) html += '<div class="pfc-progress"><div style="width:' + Math.min(100, Math.round(done * 100 / total)) + '%"></div></div>';
+    if (running) html += '<div class="pfc-progress"><div style="width:' + (ft.progress || 0) + '%"></div></div>';
 
-    const last = {};
-    (id.samples || []).forEach(s => { last[s.phase] = s.rpm; });
-    const current = (id.samples && id.samples.length) ? id.samples[id.samples.length - 1].rpm : (id.before || {});
-    const keys = Object.keys(id.before || current || {});
+    const samples = ft.samples || [];
+    const current = samples.length ? samples[samples.length - 1].rpm : (ft.before || {});
+    const keys = Object.keys(ft.before || current || {});
     if (keys.length) {
-      html += '<table class="pfc-table pfc-identify-table"><thead><tr><th>RPM sensor</th><th>Before</th><th>Now</th><th>Slow</th><th>Full</th><th></th></tr></thead><tbody>';
+      // Identify: the last RPM of the slow and the full speed step. Speed test: at 100% and at 0%.
+      const at = {};
+      samples.forEach(s => { at[speed ? s.pwm : s.phase] = s.rpm; });
+      const cols = speed ? [['100%', 255], ['0%', 0]] : [['Slow', 'low'], ['Full', 'high']];
+      html += '<div class="pfc-fantest-body"><table class="pfc-table pfc-fantest-table"><thead><tr><th>RPM sensor</th><th>Before</th><th>Now</th>' +
+        cols.map(c => '<th>' + c[0] + '</th>').join('') + '<th></th></tr></thead><tbody>';
       keys.forEach(k => {
         const r = rpmByKey(k);
-        const reacted = (id.reacted || []).indexOf(k) >= 0;
-        const f = v => (v == null ? '-' : v);
-        html += '<tr class="' + (reacted ? 'pfc-reacted' : '') + '"><td>' + esc(r ? rpmFullName(r) : k) + '</td><td>' + f((id.before || {})[k]) + '</td><td>' + f(current[k]) +
-          '</td><td>' + f((last.low || {})[k]) + '</td><td>' + f((last.high || {})[k]) + '</td><td>' + (reacted ? '<i class="fa fa-check"></i> reacted' : '') + '</td></tr>';
+        const reacted = (ft.reacted || []).indexOf(k) >= 0;
+        html += '<tr class="' + (reacted ? 'pfc-reacted' : '') + '"><td>' + esc(r ? rpmFullName(r) : k) + '</td><td>' + f((ft.before || {})[k]) + '</td><td>' + f(current[k]) + '</td>' +
+          cols.map(c => '<td>' + f((at[c[1]] || {})[k]) + '</td>').join('') +
+          '<td>' + (reacted ? '<i class="fa fa-check"></i> reacted' : '') + '</td></tr>';
       });
       html += '</tbody></table>';
+      if (speed && ft.result) html += '<div class="pfc-chart-box pfc-speed-chart"><svg class="pfc-chart" viewBox="0 0 560 260"></svg></div>';
+      html += '</div>';
     } else {
       html += '<p class="pfc-muted">This chip has no RPM sensors, so watch or listen to the fans.</p>';
     }
+
     if (!running) {
       let result;
-      if (id.error === 'Stopped') result = 'Stopped. The fan was restored to its previous setting.';
-      else if (id.error) result = id.error;
-      else if (id.paired) result = 'Done. Paired with ' + rpmFullName(rpmByKey(id.paired) || { label: id.paired, index: '' }) + '. The fan was restored to its previous setting.';
-      else if ((id.reacted || []).length > 1) result = 'Several sensors reacted. Pick the right one in the RPM sensor column.';
+      const restored = ' The fan was restored to its previous setting.';
+      if (ft.error === 'Stopped') result = 'Stopped.' + restored;
+      else if (ft.error) result = ft.error + restored;
+      else if (speed) result = 'Done. ' + testSummary(ft.result) + '. Keep the min speed of its group at or above the speed it starts at, so it always comes back after it stopped.' + restored;
+      else if (ft.paired) result = 'Done. Paired with ' + rpmFullName(rpmByKey(ft.paired) || { label: ft.paired, index: '' }) + '.' + restored;
+      else if ((ft.reacted || []).length > 1) result = 'Several sensors reacted. Pick the right one in the RPM sensor column.';
       else result = 'No RPM sensor reacted. Either nothing is connected, the fan has no RPM wire, or the header is set to DC instead of PWM in the BIOS. Did you see or hear a fan change speed?';
       html += '<p>' + esc(result) + '</p>';
     }
     $box.removeClass('pfc-hidden').html(html);
+    if (speed && ft.result) drawSpeedTest($box.find('svg')[0], ft.result);
+  }
+
+  /** RPM at every speed step of a speed test. */
+  function drawSpeedTest(svg, t) {
+    const pts = t.points.filter(p => p[1] != null).map(p => [pct(p[0]), p[1]]).sort((a, b) => a[0] - b[0]);
+    const yMax = Math.max(500, Math.ceil(Math.max(...pts.map(p => p[1])) / 500) * 500);
+    const yStep = yMax > 3000 ? 1000 : 500;
+    const yt = []; for (let v = 0; v <= yMax; v += yStep) yt.push(v);
+    const { sx, sy } = axes(svg, 0, 100, 0, yMax, [0, 20, 40, 60, 80, 100], yt, v => v + '%', v => v);
+    if (t.start_pwm != null) {
+      const x = sx(pct(t.start_pwm));
+      svg.appendChild(svgEl('line', { x1: x, x2: x, y1: PAD.t, y2: H - PAD.b, class: 'pfc-marker' }));
+      svg.appendChild(svgEl('text', { x: x + 4, y: PAD.t + 12, class: 'pfc-axis' }, 'starts at ' + pct(t.start_pwm) + '%'));
+    }
+    svg.appendChild(svgEl('path', { d: pathD(pts, sx, sy), class: 'pfc-line', stroke: COLORS[0] }));
+    pts.forEach(p => {
+      const dot = svgEl('circle', { cx: sx(p[0]), cy: sy(p[1]), r: 4, class: 'pfc-now', fill: COLORS[0] });
+      dot.appendChild(svgEl('title', {}, p[0] + '%: ' + p[1] + ' RPM'));
+      svg.appendChild(dot);
+    });
   }
 
   /* ------------------------------------------------------ sources table */
@@ -1589,7 +2167,7 @@ function pfc_clean_label($label): string {
       if (focused(this)) return;
       const v = getPath(draft, this.dataset.cfg);
       if (this.type === 'checkbox') this.checked = !!v;
-      else this.value = String(v);
+      else this.value = String(this.dataset.type === 'pct' ? pct(v) : v);
     });
   }
 
@@ -1650,6 +2228,7 @@ function pfc_clean_label($label): string {
     let v = this.type === 'checkbox' ? this.checked : this.value;
     if (this.dataset.type === 'bool') v = v === 'true' || v === true;
     if (this.dataset.type === 'int') v = parseInt(v, 10) || 0;
+    if (this.dataset.type === 'pct') v = toPwm(parseFloat(v) || 0);
     setPath(draft, this.dataset.cfg, v);
     markDirty();
     if (/^array\./.test(this.dataset.cfg)) renderDisks();
@@ -1695,14 +2274,18 @@ function pfc_clean_label($label): string {
 
   $('#pfc-pwm-table')
     .on('change', '.pfc-rpm', function () { post({ action: 'save_fan', key: $(this).closest('tr')[0].dataset.key, rpm: this.value }).then(() => load(), showError); })
-    .on('click', '.pfc-identify-btn', function () {
-      identifyDismissed = null;
-      post({ action: 'identify', key: $(this).closest('tr')[0].dataset.key }).then(() => load(), showError);
+    .on('click', '.pfc-test-btn', function () {
+      const key = $(this).closest('tr')[0].dataset.key;
+      const mode = this.dataset.mode;
+      if (mode === 'speed' && !confirm('Speed test "' + fanName(key) + '"?\n\nThe fan is stepped from 100% down to 0% and back up, which takes about a minute. ' +
+        'It stops for a while, so don\'t run this on a fan that is cooling something hot right now.')) return;
+      testDismissed = null;
+      post({ action: 'fantest', key, mode }).then(() => load(), showError);
     });
 
-  $('#pfc-identify')
-    .on('click', '#pfc-identify-stop', () => post({ action: 'identify_stop' }).then(() => load(), showError))
-    .on('click', '#pfc-identify-close', () => { identifyDismissed = state.identify.time; renderIdentify(); });
+  $('#pfc-fantest')
+    .on('click', '#pfc-fantest-stop', () => post({ action: 'fantest_stop' }).then(() => load(), showError))
+    .on('click', '#pfc-fantest-close', () => { testDismissed = state.fantest.time; renderFanTest(); });
 
   $('#pfc-show-all-sensors').on('change', () => { sourceSig = ''; renderSources(); });
 
@@ -1716,15 +2299,11 @@ function pfc_clean_label($label): string {
 <FILE Name="&emhttp;/scripts/daemon.php">
 <INLINE><![CDATA[<?php
 /*
- * PWM Fan Control - background service.
- * Started/stopped by rc.pwmfancontrol. Every <interval> seconds it reads the temperature sources,
- * works out the speed for every fan group and applies it.
- *
- * Speeding up happens right away. Slowing down only happens once the lower speed has been
- * wanted for <ramp_down> seconds (the group keeps the highest speed asked for in that window),
- * so short temperature dips don't make the fans pulse.
+ * PWM Fan Control - background service. Started and stopped by rc.pwmfancontrol.
+ * The control loop itself is in include/controller.php.
  */
 require_once dirname(__DIR__) . '/include/common.php';
+require_once dirname(__DIR__) . '/include/controller.php';
 
 @mkdir(PFC_RUN, 0777, true);
 $lock = fopen(PFC_RUN . '/daemon.lock', 'c');
@@ -1734,183 +2313,59 @@ if (!$lock || !flock($lock, LOCK_EX | LOCK_NB)) {
 }
 file_put_contents(PFC_PIDFILE, (string)getmypid());
 
-$running = true;
+$controller = new PfcController();
+$finished = false;
+
+// A crash (fatal PHP error) must not leave the fans at a low speed: run them at full speed
+// until the watchdog has restarted the service.
+register_shutdown_function(function () use ($controller, &$finished) {
+    if ($finished) return;
+    $error = error_get_last();
+    pfc_log('Crashed, fans set to full speed until the service is restarted' . ($error ? ': ' . $error['message'] : ''));
+    $controller->failsafe();
+});
+
 if (function_exists('pcntl_async_signals')) {
     pcntl_async_signals(true);
-    $stop = function () use (&$running) { $running = false; };
+    $stop = function () use ($controller) { $controller->running = false; };
     pcntl_signal(SIGTERM, $stop);
     pcntl_signal(SIGINT, $stop);
     pcntl_signal(SIGHUP, SIG_IGN);
 }
 
-$cfg = null;
-$cfg_mtime = null;
-$cfg_errors = [];
-$fans = [];
-$fans_mtime = null;
-$windows = [];       // group id => [[time, pwm], ...]
-$logged = [];        // group id => last logged pwm
-$last_history = 0;
-$warned = [];
-
-pfc_log('Started');
-
-while ($running) {
-    $tick = microtime(true);
-    $now = time();
-    clearstatcache();
-
-    // (Re)load the configuration when it changes
-    // Compare content hashes, not mtimes: two saves within one second have the same mtime
-    $mtime = (string)@md5_file(PFC_CONFIG);
-    if ($mtime !== $cfg_mtime) {
-        $cfg_mtime = $mtime;
-        $new = pfc_load_config();
-        if (!$new['enabled']) break;
-        $new_errors = pfc_validate_config($new);
-        if ($new_errors) pfc_log('Invalid configuration, affected fans run at full speed: ' . implode(' ', $new_errors));
-
-        // Fans that are no longer in any group go back to the BIOS
-        if ($cfg) {
-            $gone = array_diff_key(pfc_controlled_keys($cfg), pfc_controlled_keys($new));
-            if ($gone) {
-                $f = pfc_load_fans();
-                $hw = pfc_scan_hwmon();
-                foreach (array_keys($gone) as $key) pfc_release_fan($f, $key, $hw);
-                pfc_save_fans($f);
-                $fans_mtime = null;
-            }
-        }
-        $cfg = $new;
-        $cfg_errors = $new_errors;
-        $windows = [];
-    }
-    $fmtime = (string)@md5_file(PFC_FANS);
-    if ($fmtime !== $fans_mtime) { $fans_mtime = $fmtime; $fans = pfc_load_fans(); }
-
-    $hw = pfc_scan_hwmon();
-    $uses_nvidia = false;
-    foreach ($cfg['groups'] as $g) foreach ($g['sources'] as $b) if (strpos($b['source'], 'nvidia:') === 0) $uses_nvidia = true;
-    $nv = $uses_nvidia ? pfc_nvidia(max(20, 3 * $cfg['interval'])) : ['available' => false, 'error' => null, 'gpus' => []];
-    $sources = pfc_read_sources($cfg, $hw, $fans, null, $nv);
-    $identify = pfc_identify_running();
-
-    $warnings = [];
-    if ($nv['error']) $warnings[] = $nv['error'];
-    $fans_changed = false;
-    $status_groups = [];
-
-    foreach ($cfg['groups'] as $g) {
-        $gid = $g['id'];
-        $demand = $cfg_errors
-            ? ['pwm' => PFC_FAILSAFE_PWM, 'reason' => 'Invalid configuration, running at full speed', 'source' => null, 'demands' => []]
-            : pfc_group_demand($g, $sources);
-
-        // Keep the highest demand of the last <ramp_down> seconds
-        $windows[$gid][] = [$now, $demand['pwm']];
-        $windows[$gid] = array_values(array_filter($windows[$gid], fn($e) => $e[0] >= $now - $g['ramp_down']));
-        $applied = max(array_column($windows[$gid], 1));
-        $slow_down_in = null;
-        if ($applied > $demand['pwm']) {
-            $since = 0;
-            foreach ($windows[$gid] as $e) if ($e[1] === $applied) $since = $e[0];
-            $slow_down_in = max(0, $since + $g['ramp_down'] - $now);
-        }
-
-        $fan_count = 0;
-        foreach ($g['fans'] as $key) {
-            if (!isset($hw['pwm'][$key])) { $warnings[] = "Fan \"" . ($fans['pwm'][$key]['label'] ?? $key) . "\" in \"{$g['name']}\" was not found. Is its sensor driver loaded?"; continue; }
-            $fan = $hw['pwm'][$key];
-            if (!$fan['writable']) { $warnings[] = "Fan $key is not writable."; continue; }
-            $fan_count++;
-            if ($identify && ($identify['key'] ?? '') === $key) continue;
-
-            if ($fan['enable'] !== null && $fan['enable'] !== 1) {
-                // Remember the BIOS mode so it can be restored when the fan is released
-                if (!isset($fans['pwm'][$key]['orig_enable'])) {
-                    $fans['pwm'][$key]['orig_enable'] = (string)$fan['enable'];
-                    $fans_changed = true;
-                }
-                @file_put_contents("{$fan['path']}_enable", '1');
-            }
-            if ($fan['value'] !== $applied) @file_put_contents($fan['path'], (string)$applied);
-        }
-
-        // Log meaningful changes only (>= 5%, or entering/leaving full speed)
-        $prev = $logged[$gid] ?? null;
-        if ($cfg['log_changes'] && $fan_count && ($prev === null || abs($prev - $applied) >= 13 || ($applied === 255) !== ($prev === 255))) {
-            pfc_log("{$g['name']}: {$demand['reason']}, fans at " . round($applied * 100 / 255) . "% ($applied)");
-            $logged[$gid] = $applied;
-        }
-
-        $status_groups[$gid] = [
-            'id' => $gid, 'name' => $g['name'], 'pwm' => $applied, 'percent' => (int)round($applied * 100 / 255),
-            'demand' => $demand['pwm'], 'reason' => $demand['reason'], 'source' => $demand['source'],
-            'demands' => $demand['demands'], 'slow_down_in' => $slow_down_in, 'fans' => $fan_count,
-        ];
-    }
-    if ($fans_changed) { pfc_save_fans($fans); $fans_mtime = (string)@md5_file(PFC_FANS); }
-
-    foreach ($warnings as $w) {
-        if (empty($warned[$w])) pfc_log("Warning: $w");
-        $warned[$w] = $now;
-    }
-    foreach ($warned as $w => $t) if ($t < $now) unset($warned[$w]);
-
-    $used = [];
-    foreach ($cfg['groups'] as $g) foreach ($g['sources'] as $b) $used[$b['source']] = true;
-    $status_sources = [];
-    foreach (array_keys($used) as $id) {
-        $s = $sources[$id] ?? null;
-        $status_sources[$id] = $s ? ['temp' => $s['temp'], 'state' => $s['state'], 'detail' => $s['detail']] : ['temp' => null, 'state' => 'error', 'detail' => 'not available'];
-    }
-    pfc_write_json(PFC_STATUS, [
-        'time' => $now, 'pid' => getmypid(), 'interval' => $cfg['interval'],
-        'groups' => $status_groups, 'sources' => $status_sources, 'warnings' => array_values(array_unique($warnings)),
-    ]);
-
-    if ($now - $last_history >= PFC_HISTORY_EVERY) {
-        $last_history = $now;
-        $history = pfc_read_json(PFC_HISTORY, []);
-        $history[] = [
-            't' => $now,
-            's' => array_map(fn($s) => $s['temp'], $status_sources),
-            'g' => array_map(fn($g) => $g['pwm'], $status_groups),
-        ];
-        if (count($history) > PFC_HISTORY_MAX) $history = array_slice($history, -PFC_HISTORY_MAX);
-        pfc_write_json(PFC_HISTORY, $history);
-    }
-
-    // Sleep until the next tick, waking up regularly to notice a stop signal
-    $until = $tick + $cfg['interval'];
-    while ($running && microtime(true) < $until) usleep((int)min(250000, max(1000, ($until - microtime(true)) * 1e6)));
-}
-
-pfc_release_all($cfg);
-@unlink(PFC_STATUS);
+$controller->run();
+$finished = true;
 if ((int)@file_get_contents(PFC_PIDFILE) === getmypid()) @unlink(PFC_PIDFILE);
-pfc_log('Stopped, fans handed back to the BIOS');
 ]]></INLINE>
 </FILE>
 
-<FILE Name="&emhttp;/scripts/identify.php">
+<FILE Name="&emhttp;/scripts/fantest.php">
 <INLINE><![CDATA[<?php
 /*
- * PWM Fan Control - identify a single PWM output.
- * Usage: php identify.php <fan key>
+ * PWM Fan Control - tests a single PWM output, started from the web UI.
+ * Usage: php fantest.php identify|speed <fan key>
  *
- * Slows the fan down, spins it up to full speed and restores the original state,
- * while sampling every RPM sensor on the same chip once per second. Progress is
- * written to PFC_IDENTIFY so the web UI can show it live. If exactly one RPM sensor
- * reacts, it is stored as the RPM sensor of this fan.
+ *   identify  Slows the fan down, then runs it at full speed, so you can see and hear which fan it is.
+ *   speed     Steps the fan from 100% down to 0% and back up until it starts again, and records the
+ *             RPM at every step: the lowest speed it keeps running at and the speed it needs to start.
+ *
+ * Every RPM sensor on the same chip is sampled once per second. Progress is written to PFC_FANTEST so
+ * the web UI can show it live. If exactly one sensor reacts, it is paired with the output. The output
+ * is always restored to its previous speed and mode afterwards, also when the test is stopped.
+ * While a test runs, the service leaves this fan alone.
  */
 require_once dirname(__DIR__) . '/include/common.php';
 
-$key = $argv[1] ?? '';
+const PFC_SPEED_DOWN = [255, 204, 153, 102, 77, 51, 38, 26, 13, 0]; // 100% .. 0%
+const PFC_SPEED_UP   = [13, 26, 38, 51, 77, 102, 153];              // until the fan starts again
+const PFC_SPEED_STEP = 5;                                           // seconds per step
+
+$mode = $argv[1] ?? '';
+$key = $argv[2] ?? '';
 $cfg = pfc_load_config();
 $hw = pfc_scan_hwmon();
-if (!isset($hw['pwm'][$key])) {
-    pfc_write_json(PFC_IDENTIFY, ['key' => $key, 'phase' => 'done', 'error' => 'Fan not found', 'time' => time()]);
+if (!in_array($mode, ['identify', 'speed'], true) || !isset($hw['pwm'][$key])) {
+    pfc_write_json(PFC_FANTEST, ['key' => $key, 'mode' => $mode, 'phase' => 'done', 'error' => 'Fan not found', 'time' => time()]);
     exit(1);
 }
 
@@ -1918,25 +2373,32 @@ $fan = $hw['pwm'][$key];
 $path = $fan['path'];
 $chip_prefix = substr($key, 0, strrpos($key, '/') + 1);
 $sensors = array_filter($hw['rpm'], fn($k) => strpos($k, $chip_prefix) === 0, ARRAY_FILTER_USE_KEY);
+$fans = pfc_load_fans();
+$paired = pfc_confirmed_rpm($fans, $key);
 
-$low_pwm = max(0, min(255, (int)$cfg["identify"]["low_pwm"]));
-$seconds = max(3, min(30, (int)$cfg["identify"]["seconds"]));
+$low_pwm = max(0, min(255, (int)$cfg['identify']['low_pwm']));
+$seconds = max(3, min(30, (int)$cfg['identify']['seconds']));
+$total = $mode === 'identify' ? 2 * $seconds : (count(PFC_SPEED_DOWN) + 2) * PFC_SPEED_STEP;
 
 $state = [
     'key'      => $key,
+    'mode'     => $mode,
     'pid'      => getmypid(),
-    'phase'    => 'low',
+    'phase'    => $mode === 'identify' ? 'low' : 'down',
+    'pwm'      => null,      // speed being tested right now
     'time'     => time(),
-    'seconds'  => $seconds,
+    'progress' => 0,         // percent, an estimate for the speed test
     'low_pwm'  => $low_pwm,
-    'samples'  => [],   // [{phase, t, rpm: {sensor key: rpm}}]
-    'reacted'  => [],
-    'paired'   => null,
+    'before'   => [],        // RPM of every sensor before the test
+    'samples'  => [],        // [{phase, pwm, rpm: {sensor key: rpm}}], once per second
+    'reacted'  => [],        // sensors that followed the speed changes
+    'paired'   => null,      // sensor paired by this test
+    'result'   => null,      // speed test result, also stored in fans.json
     'error'    => null,
 ];
 
 // Always restore the fan, whatever happens
-$orig_value = $fan['value'] ?? 255;
+$orig_value = $fan['value'] ?? PFC_FAILSAFE_PWM;
 $orig_enable = $fan['enable'];
 $restored = false;
 $restore = function () use ($path, $orig_value, $orig_enable, &$restored) {
@@ -1951,26 +2413,92 @@ if (function_exists('pcntl_async_signals')) {
     foreach ([SIGTERM, SIGINT, SIGHUP] as $sig) pcntl_signal($sig, function () { exit(1); });
 }
 
-function pfc_sample(array $sensors): array {
+$sample = function () use ($sensors): array {
     $out = [];
     foreach ($sensors as $k => $s) $out[$k] = pfc_read_int($s['path']);
     return $out;
-}
+};
 
-$state['before'] = pfc_sample($sensors);
-pfc_write_json(PFC_IDENTIFY, $state);
+/** Runs the fan at $pwm for $secs seconds. Returns the last RPM sample, or null when stopped. */
+$hold = function (string $phase, int $pwm, int $secs) use (&$state, $path, $sample, &$total): ?array {
+    $state['phase'] = $phase;
+    $state['pwm'] = $pwm;
+    @file_put_contents($path, (string)$pwm);
+    $rpm = [];
+    for ($i = 0; $i < $secs; $i++) {
+        sleep(1);
+        $rpm = $sample();
+        $state['samples'][] = ['phase' => $phase, 'pwm' => $pwm, 'rpm' => $rpm];
+        $state['progress'] = max($state['progress'], min(99, (int)round(count($state['samples']) * 100 / $total)));
+        pfc_write_json(PFC_FANTEST, $state);
+        if (is_file(PFC_STOP_FLAG)) return null;
+    }
+    return $rpm;
+};
 
+/** Sensors whose RPM at $high is clearly above their RPM at $low, best first. */
+$reacting = function (array $low, array $high) use ($sensors): array {
+    $scores = [];
+    foreach ($sensors as $k => $_) {
+        $l = (int)($low[$k] ?? 0);
+        $h = (int)($high[$k] ?? 0);
+        if ($h > 0 && $h * 10 > $l * 13 && $h - $l > 150) $scores[$k] = $h - $l;
+    }
+    arsort($scores);
+    return array_keys($scores);
+};
+
+$state['before'] = $sample();
+pfc_write_json(PFC_FANTEST, $state);
 if ($orig_enable !== null && $orig_enable !== 1) @file_put_contents("{$path}_enable", '1');
 
 $stopped = false;
-foreach (['low' => $low_pwm, 'high' => 255] as $phase => $value) {
-    $state['phase'] = $phase;
-    @file_put_contents($path, (string)$value);
-    for ($i = 1; $i <= $seconds; $i++) {
-        sleep(1);
-        $state['samples'][] = ['phase' => $phase, 't' => $i, 'rpm' => pfc_sample($sensors)];
-        pfc_write_json(PFC_IDENTIFY, $state);
-        if (is_file(PFC_STOP_FLAG)) { $stopped = true; break 2; }
+if ($mode === 'identify') {
+    $low = $hold('low', $low_pwm, $seconds);
+    $high = $low === null ? null : $hold('high', 255, $seconds);
+    if ($high === null) $stopped = true;
+    else $state['reacted'] = $reacting($low, $high);
+} else {
+    // Down: record the RPM at every step
+    $down = [];
+    foreach (PFC_SPEED_DOWN as $pwm) {
+        $rpm = $hold('down', $pwm, PFC_SPEED_STEP + ($pwm === 255 ? 2 : 0)); // the first step may spin up from slow
+        if ($rpm === null) { $stopped = true; break; }
+        $down[$pwm] = $rpm;
+    }
+    if (!$stopped) {
+        $state['reacted'] = $reacting($down[0], $down[255]);
+        $sensor = $paired ?? (count($state['reacted']) === 1 ? $state['reacted'][0] : null);
+        if ($sensor === null) {
+            $state['error'] = count($state['reacted']) > 1
+                ? 'Several RPM sensors reacted. Pick the right one in the RPM sensor column, then run the test again.'
+                : 'No RPM sensor reacted, so the speeds could not be measured.';
+        } else {
+            $points = [];
+            foreach ($down as $pwm => $rpm) $points[] = [$pwm, $rpm[$sensor] ?? null];
+            $running = array_filter($points, fn($p) => (int)$p[1] > 0);
+            $min_pwm = $running ? min(array_column($running, 0)) : null;
+            $start_pwm = null;
+            if ($min_pwm === null) $state['error'] = 'The fan did not spin at any speed. Check the fan, its cable and the RPM sensor pairing.';
+            // Up: if the fan stopped, find the speed it needs to start again
+            if (($down[0][$sensor] ?? 0) === 0 && $min_pwm !== null) {
+                $total = count($state['samples']) + count(PFC_SPEED_UP) * PFC_SPEED_STEP;
+                $start_pwm = 255;
+                foreach (PFC_SPEED_UP as $pwm) {
+                    $rpm = $hold('up', $pwm, PFC_SPEED_STEP);
+                    if ($rpm === null) { $stopped = true; break; }
+                    if ((int)($rpm[$sensor] ?? 0) > 0) { $start_pwm = $pwm; break; }
+                }
+            }
+            if (!$stopped && $min_pwm !== null) {
+                $state['result'] = [
+                    'done' => true, 'time' => time(), 'rpm_key' => $sensor, 'points' => $points,
+                    'max_rpm' => $down[255][$sensor] ?? null,
+                    'min_pwm' => $min_pwm ?? 0,   // lowest speed it keeps running at
+                    'start_pwm' => $start_pwm,    // speed it needs to start from standstill (null: never stops)
+                ];
+            }
+        }
     }
 }
 $restore();
@@ -1979,29 +2507,19 @@ $restore();
 if ($stopped) {
     $state['error'] = 'Stopped';
 } else {
-    // A sensor "reacted" if its full-speed RPM is clearly above its slow RPM
-    $last = [];
-    foreach ($state['samples'] as $s) $last[$s['phase']] = $s['rpm'];
-    $scores = [];
-    foreach ($sensors as $k => $_) {
-        $low = (int)($last['low'][$k] ?? 0);
-        $high = (int)($last['high'][$k] ?? 0);
-        if ($high > 0 && $high * 10 > $low * 13 && $high - $low > 150) $scores[$k] = $high - $low;
+    // Store the pairing (when exactly one sensor reacted) and the speed test result
+    $fans = pfc_load_fans();
+    if (!$paired && count($state['reacted']) === 1) {
+        $fans['pwm'][$key]['rpm'] = $state['paired'] = $state['reacted'][0];
     }
-    arsort($scores);
-    $state['reacted'] = array_keys($scores);
-
-    if (count($scores) === 1) {
-        $fans = pfc_load_fans();
-        $fans['pwm'][$key]['rpm'] = $state['reacted'][0];
-        pfc_save_fans($fans);
-        $state['paired'] = $state['reacted'][0];
-    }
+    if ($state['result']) $fans['pwm'][$key]['test'] = $state['result'];
+    pfc_save_fans($fans);
 }
 
 $state['phase'] = 'done';
+$state['progress'] = 100;
 $state['time'] = time();
-pfc_write_json(PFC_IDENTIFY, $state);
+pfc_write_json(PFC_FANTEST, $state);
 ]]></INLINE>
 </FILE>
 

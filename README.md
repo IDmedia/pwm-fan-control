@@ -52,7 +52,8 @@ A fan can only have one controller. If two programs write to the same PWM output
 jumping between their speeds.
 
 - Remove or disable the **Dynamix Auto Fan Control** plugin, fan control User Scripts (such as
-  `fan_speed_control.sh`) and anything else that writes to `/sys/class/hwmon/*/pwm*`. The plugin cannot detect these.
+  `fan_speed_control.sh`) and anything else that writes to `/sys/class/hwmon/*/pwm*`. The plugin can't tell what they
+  are, but it shows a warning when the speed of one of its fans keeps being changed by something else.
 - Enabling fan control is refused while the earlier **Array Fan Control** plugin is installed. Its settings are
   imported as a group called *Array fans* the first time the plugin starts.
 - Fans that aren't in any group are never touched, so the BIOS keeps controlling those (for example the CPU fan).
@@ -65,10 +66,15 @@ jumping between their speeds.
    with the output automatically.
 2. **Name them**, for example *GPU intake* or *Front top*. Fan sensors without speed control, like a pump, can be
    named under *Other fan sensors*. Temperature sources can be named too, for example *Top GPU*.
-3. **Create groups.** Under *Fan groups*, click *Add group*, tick the fans that belong to it and add one or more
+3. **Run a speed test** (optional, about a minute per fan). The fan steps from 100% down to 0% and back up while the
+   page records its RPM. The result shows the lowest speed it keeps running at and the speed it needs to start again
+   after it stopped. The fan stops for a while during the test, so don't run it on a fan that is cooling something
+   hot right now.
+4. **Create groups.** Under *Fan groups*, click *Add group*, tick the fans that belong to it and add one or more
    temperature sources. A fan can only be in one group.
-4. **Adjust the curves.** The chart next to each group updates while you type, and a dot shows where each source
-   is right now.
+5. **Adjust the curves.** The chart next to each group updates while you type, and a dot shows where each source
+   is right now. If a group's min speed is below the speed one of its fans needs to start (from the speed test),
+   the group shows a warning: below that speed the fan may stop and not start again until the speed goes up.
 
 ## What it does
 
@@ -106,7 +112,7 @@ control. Disabling fan control, removing a fan from its group or removing the pl
 |---|---|---|
 | Array disks | Hottest monitored disk that is spun up | When all monitored disks are spun down, it asks for its *All disks spun down* speed. During a parity check or rebuild, it asks for its max speed (can be turned off). |
 | Nvidia GPU | `nvidia-smi`, one source per GPU | GPUs are identified by their UUID, so the sources stay correct if the cards are renumbered. |
-| Kernel sensors | Everything under `/sys/class/hwmon` | CPU (`k10temp` Tctl, `coretemp`), motherboard, NVMe (`nvme` Composite) and more. |
+| Kernel sensors | Everything under `/sys/class/hwmon` | CPU (`k10temp` Tctl, `coretemp`), motherboard, NVMe (`nvme` Composite) and more. `drivetemp` sensors are left out: reading them sends commands to the disks, which can keep them from spinning down. Use the array disks source for disks. |
 
 Fans and kernel sensors are stored by chip name and device instead of `hwmonN`, so the setup keeps working when the
 hwmon numbers change after a reboot or a kernel update.
@@ -117,11 +123,18 @@ A failure makes fans run faster, never slower.
 
 | Situation | What happens |
 |---|---|
-| A source can't be read (sensor missing, `nvidia-smi` fails, no disk temperature) | The groups using it run at full speed. A warning is shown on the page and logged. |
+| A source can't be read once (a sensor glitch) | Its previous reading is used for that one check. |
+| A source can't be read on two checks in a row (sensor missing, `nvidia-smi` fails, no disk temperature) | The groups using it run at full speed. A warning is shown on the page and logged. |
 | `nvidia-smi` hangs, for example after a GPU or driver crash | `nvidia-smi` runs in the background and is never waited on, and a run is stopped after 5 seconds. If no fresh reading arrives for 20 seconds (or 3 checks, whichever is longer), the GPU counts as unreadable. Groups that don't use the GPU keep working normally. |
 | The Nvidia driver is still loading at boot | Groups that follow a GPU run at full speed until it is ready. |
-| The service crashes or freezes | A watchdog checks every minute and restarts it. A service that hasn't updated its status for 90 seconds counts as frozen. |
+| An error inside the service | Every controlled fan runs at full speed, the error is logged, and the next check tries again. |
+| The service crashes or freezes | A crash sets every controlled fan to full speed. A watchdog checks every minute and restarts the service. A service that hasn't updated its status for 90 seconds counts as frozen. |
 | A fan in a group disappears (driver not loaded) | Shown and logged as a warning. The other fans keep working. |
+| A fan reports 0 RPM for 20 seconds while it should spin | Warning: the fan or its cable may have failed. Needs a paired RPM sensor (from *Identify*, the speed test or picked by hand). Without a speed test, a fan counts as "should spin" from 30%. |
+| Something else keeps changing the speed or mode of a fan | Warning: another fan control is probably running. |
+
+Warnings are shown on the settings page and the dashboard tile, and logged. A warning that lasts more than a minute
+also sends an Unraid notification, and another one when it is resolved (*Send notifications*).
 
 ## Settings
 
@@ -141,7 +154,8 @@ General:
 | Enable fan control | While *No*, the plugin never changes a fan. |
 | Check temperatures every | 2, 3, 5, 10, 15 or 30 seconds. Default 5. |
 | Log speed changes to syslog | Logs changes of 5% or more, and every switch to or from full speed. |
-| Identify: slow speed | PWM value (0-255) used for the slow step of *Identify*. 0 stops most fans. |
+| Send notifications | Unraid notifications for problems that last more than a minute, and when they are resolved. |
+| Identify: slow speed | Speed used for the slow step of *Identify*. 0% stops most fans. |
 | Identify: seconds per step | How long the slow and the full speed step of *Identify* last. 3-30, default 8. |
 | Disk types to monitor | Which disk types the array disks source looks at: parity, data, pools, unassigned devices, flash. Single disks can be unticked in the disk list, for example an NVMe cache that runs hot but isn't cooled by the case fans. |
 | Full speed during parity check | Whether the array disks source asks for its max speed while a parity check or rebuild runs. |
@@ -154,14 +168,16 @@ Changes to groups and settings only take effect after *Apply*. Names are saved r
 
 - Whether the service is running and, per group, the current speed, which source is driving it and a countdown
   while the fans wait to slow down.
-- Every PWM output: name, current RPM, current setting and mode, paired RPM sensor and group.
+- Every PWM output: name, current RPM, current setting and mode (and *DC mode* when the header isn't in PWM mode),
+  paired RPM sensor, group and the result of its last speed test.
 - Every temperature source with its current temperature and the groups using it.
 - Per group: the fan curves with the current temperature of each source, and a chart of the last 24 hours of
   source temperatures and fan speed. History is kept in memory and starts over after a reboot.
 - The disks the array disks source looks at, with their temperature and state.
 - Warnings, such as unreadable sources or missing fans.
 
-The dashboard gets a *PWM Fan Control* tile with the speed of every group and the RPM of every named fan.
+The dashboard gets a *PWM Fan Control* tile with the speed of every group, the RPM of every named fan and the number
+of warnings.
 
 ## Troubleshooting
 
@@ -170,10 +186,15 @@ The dashboard gets a *PWM Fan Control* tile with the speed of every group and th
 - **Identify: no RPM sensor reacted:** nothing is connected to that header, the fan has no RPM wire, or the header
   is in DC mode in the BIOS. If you saw or heard a fan change speed, it still works: pick its RPM sensor by hand or
   choose *None*.
-- **A fan keeps jumping between speeds:** another program controls the same fan. See *Conflict with other fan
-  control*.
+- **A fan keeps jumping between speeds, or "its speed keeps being changed by something else":** another program
+  controls the same fan. See *Conflict with other fan control*.
+- **"Fan ... is not spinning (0 RPM)":** check the fan and its cable. If the fan was set below the speed it needs to
+  start, raise the group's min speed (run a speed test to find it). If the wrong RPM sensor is paired, run *Identify*
+  again or pick the sensor by hand.
 - **GPU fans always at full speed:** the GPU can't be read. Check the warning on the page and run `nvidia-smi` in
   the terminal.
+- **`nvidia-smi` is slow:** without persistence mode the driver starts up for every query. Enabling it
+  (`nvidia-smi -pm 1`, for example in the `go` file) makes every check faster.
 - **Array fans react slowly:** Unraid only refreshes disk temperatures every 30 minutes by default. Lower
   *Tunable (poll_attributes)* under *Settings > Disk Settings*, for example to 300 seconds.
 - **"Service is not running":** the watchdog restarts it within a minute. If it keeps stopping, check the syslog.
@@ -191,6 +212,8 @@ All plugin files live in `source/`:
 | Path | Contents |
 |---|---|
 | `source/emhttp/` | Installed to `/usr/local/emhttp/plugins/pwm.fan.control/`: settings page, dashboard tile, API, service and scripts. |
+| `source/emhttp/include/` | `config.php` (settings), `hardware.php` (hwmon, fan names), `sources.php` (temperatures, curves), `service.php` (service, fan tests), `controller.php` (the control loop), `api.php` (web UI requests). `common.php` loads them all. |
+| `source/emhttp/scripts/` | `daemon.php` (the service), `rc.pwmfancontrol` (start/stop/watchdog), `fantest.php` (Identify and speed test), `release.php` (hands every fan back to the BIOS). |
 | `source/install.sh` | Runs after every install, update and boot: imports old settings and starts the service if enabled. |
 | `source/remove.sh` | Runs when the plugin is removed. |
 | `CHANGES.md` | Release notes shown in *Plugins*. |
@@ -208,9 +231,9 @@ the source. Set `PLUGIN_URL` when building to change the URL Unraid checks for u
 ### Manual check on a server
 
 Install the `.plg` with fan control disabled and open the settings page. Every fan output, RPM sensor and
-temperature source should be listed with live values. Run *Identify* on each output, then create a group, enable
-fan control and watch the speed follow the curve. Disabling fan control should put every fan back to its BIOS
-mode.
+temperature source should be listed with live values. Run *Identify* on each output and a speed test on one, then
+create a group, enable fan control and watch the speed follow the curve. Unplugging a paired fan for half a minute
+should show the *not spinning* warning. Disabling fan control should put every fan back to its BIOS mode.
 
 ## Credits
 

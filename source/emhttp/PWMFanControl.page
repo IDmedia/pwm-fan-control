@@ -40,6 +40,8 @@ $pfc_v = @filemtime("/usr/local/emhttp$pfc_dir/js/pfc.js");
   <p class="pfc-muted">
     Click <b>Identify</b> to slow a fan down and spin it up to full speed, then watch or listen to see which fan reacts.
     The RPM sensor that reacts is paired with the output automatically. Give each fan a name, then add it to a group above.
+    <b>Speed test</b> measures the RPM from 100% down to 0%, and shows the speed a fan stops at and the speed it needs to
+    start again. With a paired RPM sensor, a fan that stops spinning while it should run is reported as a warning.
   </p>
   <div class="pfc-table-wrap">
     <table class="pfc-table" id="pfc-pwm-table">
@@ -47,7 +49,7 @@ $pfc_v = @filemtime("/usr/local/emhttp$pfc_dir/js/pfc.js");
       <tbody><tr><td colspan="7" class="pfc-muted">Loading...</td></tr></tbody>
     </table>
   </div>
-  <div id="pfc-identify" class="pfc-identify pfc-hidden"></div>
+  <div id="pfc-fantest" class="pfc-fantest pfc-hidden"></div>
 
   <div id="pfc-rpm-section" class="pfc-hidden">
     <div class="title"><span class="left"><i class="fa fa-circle-o-notch title"></i>Other fan sensors</span></div>
@@ -111,9 +113,13 @@ $pfc_v = @filemtime("/usr/local/emhttp$pfc_dir/js/pfc.js");
     </dd></dl>
     <dl><dt>Log speed changes to syslog:</dt><dd>
       <select data-cfg="log_changes" data-type="bool"><option value="true">Yes</option><option value="false">No</option></select>
-      <span class="pfc-muted">Only changes of 5% or more are logged.</span>
+      <span class="pfc-muted">Changes of 5% or more, and every switch to or from full speed.</span>
     </dd></dl>
-    <dl><dt>Identify: slow speed (PWM 0-255):</dt><dd><input type="number" min="0" max="255" class="pfc-narrow" data-cfg="identify.low_pwm" data-type="int"> <span class="pfc-muted">0 stops most fans.</span></dd></dl>
+    <dl><dt>Send notifications:</dt><dd>
+      <select data-cfg="notify" data-type="bool"><option value="true">Yes</option><option value="false">No</option></select>
+      <span class="pfc-muted">An Unraid notification when a problem lasts more than a minute (a fan stopped, a source can't be read, ...) and when it is resolved.</span>
+    </dd></dl>
+    <dl><dt>Identify: slow speed:</dt><dd><input type="number" min="0" max="100" class="pfc-narrow" data-cfg="identify.low_pwm" data-type="pct"> % <span class="pfc-muted">0% stops most fans.</span></dd></dl>
     <dl><dt>Identify: seconds per step:</dt><dd><input type="number" min="3" max="30" class="pfc-narrow" data-cfg="identify.seconds" data-type="int"></dd></dl>
     <dl><dt>&nbsp;</dt><dd>
       <button type="button" class="pfc-apply">Apply</button>

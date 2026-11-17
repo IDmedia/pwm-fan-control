@@ -55,12 +55,12 @@
 #pfc .pfc-swatch-lg { width: 6px; height: 28px; margin: 0; }
 #pfc .pfc-g-addsrc { margin: 0; max-width: 100%; }
 
-#pfc .pfc-identify { margin: 0 0 18px; padding: 12px 14px; border: 1px solid var(--pfc-accent); border-radius: 4px; }
-#pfc .pfc-identify-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-#pfc .pfc-identify-head button { margin: 0 0 0 auto; }
+#pfc .pfc-fantest { margin: 0 0 18px; padding: 12px 14px; border: 1px solid var(--pfc-accent); border-radius: 4px; }
+#pfc .pfc-fantest-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+#pfc .pfc-fantest-head button { margin: 0 0 0 auto; }
 #pfc .pfc-progress { height: 6px; margin: 10px 0; background: rgba(128, 128, 128, .2); border-radius: 3px; overflow: hidden; }
 #pfc .pfc-progress div { height: 100%; background: var(--pfc-accent); transition: width .9s linear; }
-#pfc .pfc-identify-table { max-width: 720px; }
+#pfc .pfc-fantest-table { max-width: 720px; }
 #pfc .pfc-reacted td { color: var(--pfc-ok); font-weight: bold; }
 
 #pfc .pfc-charts { display: flex; flex-wrap: wrap; gap: 18px; margin-top: 12px; }
@@ -77,3 +77,11 @@
 #pfc .pfc-key { display: inline-block; width: 14px; height: 3px; margin: 0 4px 3px 0; vertical-align: middle; }
 #pfc .pfc-key-fan { background: currentColor; }
 #pfc .pfc-checks label { margin-right: 14px; white-space: nowrap; }
+#pfc .pfc-nowrap { white-space: nowrap; }
+#pfc .pfc-nowrap button + button { margin-left: 6px; }
+#pfc .pfc-warn-text { color: var(--pfc-accent); }
+#pfc .pfc-warn-text:empty { display: none; }
+#pfc .pfc-fantest-body { display: flex; flex-wrap: wrap; gap: 18px; align-items: flex-start; }
+#pfc .pfc-fantest-body .pfc-fantest-table { flex: 1 1 380px; }
+#pfc .pfc-speed-chart { flex: 1 1 380px; max-width: 560px; }
+#pfc .pfc-marker { stroke: var(--pfc-accent); stroke-dasharray: 4 4; }

@@ -16,7 +16,7 @@
   let pwmSig = '';
   let rpmSig = '';
   let sourceSig = '';
-  let identifyDismissed = null;
+  let testDismissed = null;
   let timer = null;
   let historyTick = 0;
 
@@ -103,8 +103,8 @@
 
   function schedule() {
     clearTimeout(timer);
-    const identifying = state && state.identify && state.identify.phase !== 'done';
-    const interval = identifying ? 1000 : Math.max(2000, Math.min(5000, ((state && state.config.interval) || 5) * 1000));
+    const testing = state && state.fantest && state.fantest.phase !== 'done';
+    const interval = testing ? 1000 : Math.max(2000, Math.min(5000, ((state && state.config.interval) || 5) * 1000));
     timer = setTimeout(() => {
       historyTick = (historyTick + 1) % 15;
       load(historyTick === 0);
@@ -126,7 +126,7 @@
     updateGroups();
     renderPwmTable();
     renderRpmTable();
-    renderIdentify();
+    renderFanTest();
     renderSources();
     renderDisks();
     fillCfgInputs();
@@ -227,9 +227,10 @@
         '<div class="pfc-group-section"><div class="pfc-group-label">Temperature sources</div>' +
           '<div class="pfc-table-wrap"><table class="pfc-table pfc-bind-table"><thead><tr>' +
           '<th>Source</th><th>Low °C</th><th>High °C</th><th>Min speed</th><th>Max speed</th>' + (hasArray ? '<th>All disks spun down</th>' : '') + '<th>Now</th><th>Wants</th><th></th>' +
-          '</tr></thead><tbody>' + (rows || '<tr><td colspan="8" class="pfc-muted">No sources yet. Add one below.</td></tr>') + '</tbody></table></div>' +
+          '</tr></thead><tbody>' + (rows || '<tr><td colspan="9" class="pfc-muted">No sources yet. Add one below.</td></tr>') + '</tbody></table></div>' +
           '<select class="pfc-g-addsrc">' + sourceOptions(g) + '</select>' +
           '<p class="pfc-muted pfc-small">Below <b>Low</b> a source asks for the minimum speed, above <b>High</b> for the maximum speed, and in between for a speed on a straight line.</p>' +
+          '<p class="pfc-g-hint pfc-warn-text pfc-small"></p>' +
         '</div>' +
         '<div class="pfc-charts">' +
           '<div class="pfc-chart-box"><div class="pfc-chart-title">Fan curves</div><svg class="pfc-chart pfc-curve" viewBox="0 0 560 260"></svg></div>' +
@@ -256,6 +257,13 @@
       });
       const live = st && st.groups[g.id];
       $g.find('.pfc-g-now').html(live ? 'Now <b>' + live.percent + '%</b>' : '');
+
+      // Fans that may not start again at the lowest speed of this group (from their speed test)
+      const lowest = Math.min(...g.sources.map(b => Math.min(b.min_pwm, b.idle_pwm != null ? b.idle_pwm : 255)));
+      const hints = g.fans.map(pwmByKey).filter(p => { const from = fanSpinsFrom(p); return from != null && lowest > 0 && lowest < from; })
+        .map(p => '"' + (p.label || fanName(p.key)) + '" needs ' + pct(fanSpinsFrom(p)) + '% to start');
+      $g.find('.pfc-g-hint').html(hints.length ? '<i class="fa fa-exclamation-triangle"></i> The lowest speed in this group is ' + pct(lowest) +
+        '%, but ' + esc(hints.join(', ')) + ' (speed test). Below that the fan may stop and not start again until the speed goes up. Set 0% if you want it to stop.' : '');
       drawCurve($g.find('.pfc-curve')[0], g);
       drawHistory($g.find('.pfc-history')[0], g);
     });
@@ -369,6 +377,16 @@
     return html;
   }
 
+  /** Short text for a speed test result, e.g. "Stops below 20%, starts at 30%". */
+  function testSummary(t) {
+    if (!t || !t.done) return '';
+    if (t.start_pwm == null) return 'Never stops, ' + t.max_rpm + ' RPM max';
+    return 'Stops below ' + pct(t.min_pwm) + '%, starts at ' + pct(t.start_pwm) + '%';
+  }
+
+  /** Lowest speed at which a fan reliably runs, from its speed test (null without a test). */
+  const fanSpinsFrom = p => (p && p.test && p.test.done ? (p.test.start_pwm != null ? p.test.start_pwm : p.test.min_pwm) : null);
+
   function renderPwmTable() {
     const $tb = $('#pfc-pwm-table tbody');
     if (!state.pwm.length) { $tb.html('<tr><td colspan="7" class="pfc-muted">No controllable fan outputs found.</td></tr>'); pwmSig = ''; return; }
@@ -378,30 +396,36 @@
       $tb.html(state.pwm.map(p =>
         '<tr data-key="' + esc(p.key) + '">' +
         '<td><input type="text" class="pfc-label" maxlength="40" placeholder="e.g. GPU intake"></td>' +
-        '<td><span class="pfc-output"></span><br><span class="pfc-muted pfc-small"></span></td>' +
+        '<td><span class="pfc-output"></span><br><span class="pfc-muted pfc-small pfc-path"></span></td>' +
         '<td class="pfc-speed"></td><td class="pfc-setting"></td>' +
         '<td><select class="pfc-rpm">' + rpmOptions(p) + '</select></td>' +
         '<td class="pfc-group-cell"></td>' +
-        '<td><button type="button" class="pfc-identify-btn">Identify</button></td></tr>').join(''));
+        '<td class="pfc-nowrap"><button type="button" class="pfc-test-btn" data-mode="identify" title="Slow the fan down, then run it at full speed">Identify</button>' +
+        '<button type="button" class="pfc-test-btn" data-mode="speed" title="Measure the RPM from 100% down to 0%: where the fan stops and where it starts again">Speed test</button></td></tr>').join(''));
     }
     const owner = {};
     draft.groups.forEach(g => g.fans.forEach(f => { owner[f] = g.name; }));
-    const identifying = state.identify && state.identify.phase !== 'done' ? state.identify.key : null;
+    const testing = state.fantest && state.fantest.phase !== 'done' ? state.fantest.key : null;
 
     state.pwm.forEach(p => {
       const $tr = $tb.find('tr').filter(function () { return this.dataset.key === p.key; });
       const label = $tr.find('.pfc-label')[0];
       if (!focused(label) && !label.dataset.dirty) label.value = p.label;
       $tr.find('.pfc-output').text(p.chip + ' · PWM ' + p.index);
-      $tr.find('.pfc-small').first().text(p.hwmon + '/pwm' + p.index);
+      $tr.find('.pfc-path').text(p.hwmon + '/pwm' + p.index);
       const rpmTxt = p.rpm_key === 'none' ? '-' : (p.rpm == null ? 'n/a' : p.rpm + ' RPM');
-      $tr.find('.pfc-speed').html(esc(rpmTxt) + (p.rpm_key && p.rpm_key !== 'none' && !p.rpm_confirmed ? ' <span class="pfc-muted pfc-small" title="Not confirmed yet. Use Identify to confirm.">(guess)</span>' : ''));
-      $tr.find('.pfc-setting').html(p.value == null ? 'n/a' : esc(pct(p.value) + '% (' + p.value + ')') + '<br><span class="pfc-muted pfc-small">' + esc(p.enable_name) + '</span>');
+      const guess = p.rpm_key && p.rpm_key !== 'none' && !p.rpm_confirmed;
+      const summary = testSummary(p.test);
+      $tr.find('.pfc-speed').html(esc(rpmTxt) +
+        (guess ? ' <span class="pfc-muted pfc-small" title="Not confirmed yet. Use Identify to confirm.">(guess)</span>' : '') +
+        (summary ? '<br><span class="pfc-muted pfc-small" title="Result of the last speed test">' + esc(summary) + '</span>' : ''));
+      $tr.find('.pfc-setting').html(p.value == null ? 'n/a' : esc(pct(p.value) + '% (' + p.value + ')') + '<br><span class="pfc-muted pfc-small">' + esc(p.enable_name) +
+        (p.mode === 0 ? ' · <span class="pfc-error-text" title="This header is in DC mode. Set it to PWM in the BIOS.">DC mode</span>' : '') + '</span>');
       const sel = $tr.find('.pfc-rpm')[0];
       if (!focused(sel)) sel.value = p.rpm_confirmed ? p.rpm_key : '';
       $tr.find('.pfc-group-cell').html(owner[p.key] ? esc(owner[p.key]) : '<span class="pfc-muted">-</span>');
-      $tr.toggleClass('pfc-active-row', identifying === p.key);
-      $tr.find('.pfc-identify-btn').prop('disabled', !!identifying || !p.writable);
+      $tr.toggleClass('pfc-active-row', testing === p.key);
+      $tr.find('.pfc-test-btn').prop('disabled', !!testing || !p.writable);
     });
   }
 
@@ -426,51 +450,85 @@
     });
   }
 
-  function renderIdentify() {
-    const id = state.identify;
-    const $box = $('#pfc-identify');
-    if (!id || !id.key || (id.phase === 'done' && identifyDismissed === id.time)) { $box.addClass('pfc-hidden'); return; }
-    const running = id.phase !== 'done';
-    const total = (id.seconds || 1) * 2;
-    const done = (id.samples || []).length;
+  /** The Identify / speed test panel below the fan table. */
+  function renderFanTest() {
+    const ft = state.fantest;
+    const $box = $('#pfc-fantest');
+    if (!ft || !ft.key || (ft.phase === 'done' && testDismissed === ft.time)) { $box.addClass('pfc-hidden'); return; }
+    const running = ft.phase !== 'done';
+    const speed = ft.mode === 'speed';
+    const f = v => (v == null ? '-' : v);
 
-    let html = '<div class="pfc-identify-head"><b>Identifying ' + esc(fanName(id.key)) + '</b> ';
+    let html = '<div class="pfc-fantest-head"><b>' + (speed ? 'Speed test: ' : 'Identifying ') + esc(fanName(ft.key)) + '</b> ';
     if (running) {
-      const step = id.phase === 'low' ? 'Slowing down to ' + pct(id.low_pwm || 0) + '%' : id.phase === 'high' ? 'Full speed' : 'Starting';
-      html += '<span class="pfc-muted">' + esc(step) + '...</span><button type="button" id="pfc-identify-stop">Stop</button>';
+      const step = ft.phase === 'starting' ? 'Starting' :
+        ft.phase === 'low' ? 'Slowing down to ' + pct(ft.low_pwm || 0) + '%' :
+        ft.phase === 'high' ? 'Full speed' :
+        (ft.phase === 'up' ? 'Starting again at ' : 'Running at ') + pct(ft.pwm || 0) + '%';
+      html += '<span class="pfc-muted">' + esc(step) + '...</span><button type="button" id="pfc-fantest-stop">Stop</button>';
     } else {
-      html += '<button type="button" id="pfc-identify-close">Close</button>';
+      html += '<button type="button" id="pfc-fantest-close">Close</button>';
     }
     html += '</div>';
-    if (running) html += '<div class="pfc-progress"><div style="width:' + Math.min(100, Math.round(done * 100 / total)) + '%"></div></div>';
+    if (running) html += '<div class="pfc-progress"><div style="width:' + (ft.progress || 0) + '%"></div></div>';
 
-    const last = {};
-    (id.samples || []).forEach(s => { last[s.phase] = s.rpm; });
-    const current = (id.samples && id.samples.length) ? id.samples[id.samples.length - 1].rpm : (id.before || {});
-    const keys = Object.keys(id.before || current || {});
+    const samples = ft.samples || [];
+    const current = samples.length ? samples[samples.length - 1].rpm : (ft.before || {});
+    const keys = Object.keys(ft.before || current || {});
     if (keys.length) {
-      html += '<table class="pfc-table pfc-identify-table"><thead><tr><th>RPM sensor</th><th>Before</th><th>Now</th><th>Slow</th><th>Full</th><th></th></tr></thead><tbody>';
+      // Identify: the last RPM of the slow and the full speed step. Speed test: at 100% and at 0%.
+      const at = {};
+      samples.forEach(s => { at[speed ? s.pwm : s.phase] = s.rpm; });
+      const cols = speed ? [['100%', 255], ['0%', 0]] : [['Slow', 'low'], ['Full', 'high']];
+      html += '<div class="pfc-fantest-body"><table class="pfc-table pfc-fantest-table"><thead><tr><th>RPM sensor</th><th>Before</th><th>Now</th>' +
+        cols.map(c => '<th>' + c[0] + '</th>').join('') + '<th></th></tr></thead><tbody>';
       keys.forEach(k => {
         const r = rpmByKey(k);
-        const reacted = (id.reacted || []).indexOf(k) >= 0;
-        const f = v => (v == null ? '-' : v);
-        html += '<tr class="' + (reacted ? 'pfc-reacted' : '') + '"><td>' + esc(r ? rpmFullName(r) : k) + '</td><td>' + f((id.before || {})[k]) + '</td><td>' + f(current[k]) +
-          '</td><td>' + f((last.low || {})[k]) + '</td><td>' + f((last.high || {})[k]) + '</td><td>' + (reacted ? '<i class="fa fa-check"></i> reacted' : '') + '</td></tr>';
+        const reacted = (ft.reacted || []).indexOf(k) >= 0;
+        html += '<tr class="' + (reacted ? 'pfc-reacted' : '') + '"><td>' + esc(r ? rpmFullName(r) : k) + '</td><td>' + f((ft.before || {})[k]) + '</td><td>' + f(current[k]) + '</td>' +
+          cols.map(c => '<td>' + f((at[c[1]] || {})[k]) + '</td>').join('') +
+          '<td>' + (reacted ? '<i class="fa fa-check"></i> reacted' : '') + '</td></tr>';
       });
       html += '</tbody></table>';
+      if (speed && ft.result) html += '<div class="pfc-chart-box pfc-speed-chart"><svg class="pfc-chart" viewBox="0 0 560 260"></svg></div>';
+      html += '</div>';
     } else {
       html += '<p class="pfc-muted">This chip has no RPM sensors, so watch or listen to the fans.</p>';
     }
+
     if (!running) {
       let result;
-      if (id.error === 'Stopped') result = 'Stopped. The fan was restored to its previous setting.';
-      else if (id.error) result = id.error;
-      else if (id.paired) result = 'Done. Paired with ' + rpmFullName(rpmByKey(id.paired) || { label: id.paired, index: '' }) + '. The fan was restored to its previous setting.';
-      else if ((id.reacted || []).length > 1) result = 'Several sensors reacted. Pick the right one in the RPM sensor column.';
+      const restored = ' The fan was restored to its previous setting.';
+      if (ft.error === 'Stopped') result = 'Stopped.' + restored;
+      else if (ft.error) result = ft.error + restored;
+      else if (speed) result = 'Done. ' + testSummary(ft.result) + '. Keep the min speed of its group at or above the speed it starts at, so it always comes back after it stopped.' + restored;
+      else if (ft.paired) result = 'Done. Paired with ' + rpmFullName(rpmByKey(ft.paired) || { label: ft.paired, index: '' }) + '.' + restored;
+      else if ((ft.reacted || []).length > 1) result = 'Several sensors reacted. Pick the right one in the RPM sensor column.';
       else result = 'No RPM sensor reacted. Either nothing is connected, the fan has no RPM wire, or the header is set to DC instead of PWM in the BIOS. Did you see or hear a fan change speed?';
       html += '<p>' + esc(result) + '</p>';
     }
     $box.removeClass('pfc-hidden').html(html);
+    if (speed && ft.result) drawSpeedTest($box.find('svg')[0], ft.result);
+  }
+
+  /** RPM at every speed step of a speed test. */
+  function drawSpeedTest(svg, t) {
+    const pts = t.points.filter(p => p[1] != null).map(p => [pct(p[0]), p[1]]).sort((a, b) => a[0] - b[0]);
+    const yMax = Math.max(500, Math.ceil(Math.max(...pts.map(p => p[1])) / 500) * 500);
+    const yStep = yMax > 3000 ? 1000 : 500;
+    const yt = []; for (let v = 0; v <= yMax; v += yStep) yt.push(v);
+    const { sx, sy } = axes(svg, 0, 100, 0, yMax, [0, 20, 40, 60, 80, 100], yt, v => v + '%', v => v);
+    if (t.start_pwm != null) {
+      const x = sx(pct(t.start_pwm));
+      svg.appendChild(svgEl('line', { x1: x, x2: x, y1: PAD.t, y2: H - PAD.b, class: 'pfc-marker' }));
+      svg.appendChild(svgEl('text', { x: x + 4, y: PAD.t + 12, class: 'pfc-axis' }, 'starts at ' + pct(t.start_pwm) + '%'));
+    }
+    svg.appendChild(svgEl('path', { d: pathD(pts, sx, sy), class: 'pfc-line', stroke: COLORS[0] }));
+    pts.forEach(p => {
+      const dot = svgEl('circle', { cx: sx(p[0]), cy: sy(p[1]), r: 4, class: 'pfc-now', fill: COLORS[0] });
+      dot.appendChild(svgEl('title', {}, p[0] + '%: ' + p[1] + ' RPM'));
+      svg.appendChild(dot);
+    });
   }
 
   /* ------------------------------------------------------ sources table */
@@ -528,7 +586,7 @@
       if (focused(this)) return;
       const v = getPath(draft, this.dataset.cfg);
       if (this.type === 'checkbox') this.checked = !!v;
-      else this.value = String(v);
+      else this.value = String(this.dataset.type === 'pct' ? pct(v) : v);
     });
   }
 
@@ -589,6 +647,7 @@
     let v = this.type === 'checkbox' ? this.checked : this.value;
     if (this.dataset.type === 'bool') v = v === 'true' || v === true;
     if (this.dataset.type === 'int') v = parseInt(v, 10) || 0;
+    if (this.dataset.type === 'pct') v = toPwm(parseFloat(v) || 0);
     setPath(draft, this.dataset.cfg, v);
     markDirty();
     if (/^array\./.test(this.dataset.cfg)) renderDisks();
@@ -634,14 +693,18 @@
 
   $('#pfc-pwm-table')
     .on('change', '.pfc-rpm', function () { post({ action: 'save_fan', key: $(this).closest('tr')[0].dataset.key, rpm: this.value }).then(() => load(), showError); })
-    .on('click', '.pfc-identify-btn', function () {
-      identifyDismissed = null;
-      post({ action: 'identify', key: $(this).closest('tr')[0].dataset.key }).then(() => load(), showError);
+    .on('click', '.pfc-test-btn', function () {
+      const key = $(this).closest('tr')[0].dataset.key;
+      const mode = this.dataset.mode;
+      if (mode === 'speed' && !confirm('Speed test "' + fanName(key) + '"?\n\nThe fan is stepped from 100% down to 0% and back up, which takes about a minute. ' +
+        'It stops for a while, so don\'t run this on a fan that is cooling something hot right now.')) return;
+      testDismissed = null;
+      post({ action: 'fantest', key, mode }).then(() => load(), showError);
     });
 
-  $('#pfc-identify')
-    .on('click', '#pfc-identify-stop', () => post({ action: 'identify_stop' }).then(() => load(), showError))
-    .on('click', '#pfc-identify-close', () => { identifyDismissed = state.identify.time; renderIdentify(); });
+  $('#pfc-fantest')
+    .on('click', '#pfc-fantest-stop', () => post({ action: 'fantest_stop' }).then(() => load(), showError))
+    .on('click', '#pfc-fantest-close', () => { testDismissed = state.fantest.time; renderFanTest(); });
 
   $('#pfc-show-all-sensors').on('change', () => { sourceSig = ''; renderSources(); });
 

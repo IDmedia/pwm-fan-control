@@ -20,22 +20,27 @@ $mytiles[$pluginname]['column2'] = <<<'EOT'
   var API = '/plugins/pwm.fan.control/include/api.php';
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
   function update() {
-    $.getJSON(API, { action: 'state' }).done(function (s) {
-      var live = s.running && s.status;
-      $('#pfc-tile-status').text(live ? 'Running' : (s.config.enabled ? 'Not running' : 'Fan control disabled'));
+    $.getJSON(API, { action: 'tile' }).done(function (s) {
+      var live = s.status;
+      var warnings = live ? live.warnings.length : 0;
+      $('#pfc-tile-status').html(live
+        ? 'Running' + (warnings ? ' · <a href="/Settings/PWMFanControl" style="color:#d9534f" title="' + esc(live.warnings.join('\n')) + '">' + warnings + ' warning' + (warnings === 1 ? '' : 's') + '</a>' : '')
+        : (s.enabled ? '<span style="color:#d9534f">Not running</span>' : 'Fan control disabled'));
 
       // Groups: name, speed and what drives it
-      var groups = s.config.groups.map(function (g) {
-        var st = live ? s.status.groups[g.id] : null;
-        if (!st) return '';
-        return '<div title="' + esc(st.reason) + '"><b>' + esc(g.name) + '</b> ' + st.percent + '%</div>';
-      }).join('');
-      $('#pfc-tile-groups').html(groups);
+      var names = {};
+      s.groups.forEach(function (g) { names[g.id] = g.name; });
+      $('#pfc-tile-groups').html(s.groups.map(function (g) {
+        var st = live && live.groups[g.id];
+        return st ? '<div title="' + esc(st.reason) + '"><b>' + esc(g.name) + '</b> ' + st.percent + '%</div>' : '';
+      }).join(''));
 
       // One entry per RPM sensor, named after its fan output when paired
       var pairedBy = {}, owner = {};
-      s.config.groups.forEach(function (g) { g.fans.forEach(function (f) { owner[f] = g.name; }); });
-      s.pwm.forEach(function (p) { if (p.rpm_key && p.rpm_key !== 'none') pairedBy[p.rpm_key] = p; });
+      s.pwm.forEach(function (p) {
+        if (p.rpm_key && p.rpm_key !== 'none') pairedBy[p.rpm_key] = p;
+        if (p.group) owner[p.key] = names[p.group];
+      });
       var items = [];
       s.rpm.forEach(function (r) {
         var p = pairedBy[r.key];
