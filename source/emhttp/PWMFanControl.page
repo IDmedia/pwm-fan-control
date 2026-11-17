@@ -1,7 +1,7 @@
 Menu="Utilities"
 Title="PWM Fan Control"
-Icon="fa-snowflake-o"
-Tag="snowflake-o"
+Icon="icon-fan"
+Tag="icon-fan"
 Markdown="false"
 ---
 <?php
@@ -36,7 +36,7 @@ $pfc_v = @filemtime("/usr/local/emhttp$pfc_dir/js/pfc.js");
   <p><button type="button" id="pfc-add-group"><i class="fa fa-plus"></i> Add group</button></p>
 
   <!-- Fans -->
-  <div class="title"><span class="left"><i class="fa fa-snowflake-o title"></i>Fans</span></div>
+  <div class="title"><span class="left"><i class="icon-fan title"></i>Fans</span></div>
   <p class="pfc-muted">
     Click <b>Identify</b> to slow a fan down and spin it up to full speed, then watch or listen to see which fan reacts.
     The RPM sensor that reacts is paired with the output automatically. Give each fan a name, then add it to a group above.

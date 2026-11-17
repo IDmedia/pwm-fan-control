@@ -6,14 +6,15 @@
 <!ENTITY pluginURL "https://raw.githubusercontent.com/IDmedia/pwm-fan-control/main/pwm.fan.control.plg">
 <!ENTITY emhttp    "/usr/local/emhttp/plugins/&name;">
 ]>
-<PLUGIN name="&name;" author="&author;" version="&version;" pluginURL="&pluginURL;" min="7.4.0" icon="snowflake-o" launch="Settings/PWMFanControl">
+<PLUGIN name="&name;" author="&author;" version="&version;" pluginURL="&pluginURL;" min="7.4.0" icon="icon-fan" launch="Settings/PWMFanControl">
 
 <CHANGES>
 ###2026.11.17
 - Requires Unraid 7.4 or newer
+- Fan icon from Unraid's own icon set instead of the snowflake
 - Speed test: steps a fan down from 100% until it stops, then finds the speed it needs to start again; the fan stands still only for a few seconds at a time
 - Fan tests don't start, and stop right away, when the fan's group needs it (temperature at or above high, source unreadable, parity check)
-- Identify slows fans to 20% by default instead of stopping them, 5 seconds per step
+- Identify slows fans to 20% by default instead of stopping them, and keeps them slow until they have stopped slowing down (8 seconds per step by default)
 - Warns when a group's min speed is below the speed one of its fans needs to start
 - Warns when a fan stops spinning (0 RPM) while it should run, and when another program changes a fan's speed
 - Problems are sent as Unraid alert notifications when they last more than a minute, a crash or watchdog restart right away, and a notice when resolved
@@ -54,8 +55,8 @@ rm -rf /usr/local/emhttp/plugins/pwm.fan.control
 <FILE Name="&emhttp;/PWMFanControl.page">
 <INLINE><![CDATA[Menu="Utilities"
 Title="PWM Fan Control"
-Icon="fa-snowflake-o"
-Tag="snowflake-o"
+Icon="icon-fan"
+Tag="icon-fan"
 Markdown="false"
 ---
 <?php
@@ -90,7 +91,7 @@ $pfc_v = @filemtime("/usr/local/emhttp$pfc_dir/js/pfc.js");
   <p><button type="button" id="pfc-add-group"><i class="fa fa-plus"></i> Add group</button></p>
 
   <!-- Fans -->
-  <div class="title"><span class="left"><i class="fa fa-snowflake-o title"></i>Fans</span></div>
+  <div class="title"><span class="left"><i class="icon-fan title"></i>Fans</span></div>
   <p class="pfc-muted">
     Click <b>Identify</b> to slow a fan down and spin it up to full speed, then watch or listen to see which fan reacts.
     The RPM sensor that reacts is paired with the output automatically. Give each fan a name, then add it to a group above.
@@ -184,7 +185,7 @@ $pfc_v = @filemtime("/usr/local/emhttp$pfc_dir/js/pfc.js");
         (e.g. "it87 force_id=0x8628"). Leave empty if another plugin (e.g. Dynamix System Temperature) loads the driver.</span>
     </dd></dl>
     <dl><dt>Identify: slow speed:</dt><dd><input type="number" min="0" max="100" class="pfc-narrow" data-cfg="identify.low_pwm" data-type="pct"> % <span class="pfc-muted">Default 20%: clearly slower, without stopping the fan. 0% stops most fans.</span></dd></dl>
-    <dl><dt>Identify: seconds per step:</dt><dd><input type="number" min="3" max="30" class="pfc-narrow" data-cfg="identify.seconds" data-type="int"></dd></dl>
+    <dl><dt>Identify: seconds per step:</dt><dd><input type="number" min="3" max="30" class="pfc-narrow" data-cfg="identify.seconds" data-type="int"> <span class="pfc-muted">The slow step goes on until the fan has stopped slowing down, at most 30 seconds.</span></dd></dl>
     <dl><dt>&nbsp;</dt><dd>
       <button type="button" class="pfc-apply">Apply</button>
       <button type="button" class="pfc-reset">Discard</button>
@@ -212,7 +213,7 @@ $pluginname = 'pwm.fan.control';
 $mytiles[$pluginname]['column2'] = <<<'EOT'
 <tbody id="pfc-tile" title="PWM Fan Control">
 <tr><td>
-<i class="fa fa-snowflake-o f32"></i>
+<i class="icon-fan f32"></i>
 <div class="section">PWM Fan Control<br>
 <span id="pfc-tile-status">Loading...</span></div>
 <a href="/Settings/PWMFanControl" title="Fan settings"><i class="fa fa-fw fa-cog control"></i></a>
@@ -253,7 +254,7 @@ $mytiles[$pluginname]['column2'] = <<<'EOT'
         var name = (p && p.label) || r.label || r.driver_label || ('Fan ' + r.index);
         if (!r.rpm && !(p && p.label) && !r.label) return; // hide empty, unnamed headers
         var extra = p && p.value != null ? ' · ' + Math.round(p.value * 100 / 255) + '%' : '';
-        var icon = p && owner[p.key] ? ' <i class="fa fa-snowflake-o" title="Controlled by ' + esc(owner[p.key]) + '"></i>' : '';
+        var icon = p && owner[p.key] ? ' <i class="icon-fan" title="Controlled by ' + esc(owner[p.key]) + '"></i>' : '';
         items.push('<div><div>' + esc(name) + icon + '</div><div style="opacity:.75">' + (r.rpm == null ? 'n/a' : r.rpm + ' RPM') + esc(extra) + '</div></div>');
       });
       $('#pfc-tile-fans').html(items.length ? items.join('') : '<div style="opacity:.75">No fans found</div>');
@@ -693,7 +694,7 @@ function pfc_clean_label($label): string {
  *
  * {
  *   "enabled": false, "interval": 5, "log_changes": true, "notify": true, "drivers": "nct6775",
- *   "identify": {"low_pwm": 51, "seconds": 5},
+ *   "identify": {"low_pwm": 51, "seconds": 8},
  *   "array": {"include": {"Parity": true, ...}, "exclude": ["disk3"], "parity_full_speed": true},
  *   "groups": [{"id": "g1a2b", "name": "Array fans", "fans": ["<fan key>"], "ramp_down": 30,
  *               "sources": [{"source": "array", "low": 35, "high": 48, "min_pwm": 170, "max_pwm": 255, "idle_pwm": 170}]}]
@@ -708,7 +709,7 @@ function pfc_default_config(): array {
         'log_changes' => true,
         'notify'      => true,
         'drivers'     => '',      // kernel modules to load, e.g. "nct6775" or "it87 force_id=0x8628; nct6775"
-        'identify'    => ['low_pwm' => 51, 'seconds' => 5],   // 20%: slows fans clearly without stopping them
+        'identify'    => ['low_pwm' => 51, 'seconds' => 8],   // 20%: slows fans clearly without stopping them
         'array'       => [
             'include' => ['Parity' => true, 'Data' => true, 'Cache' => true, 'Unassigned' => true, 'Flash' => false],
             'exclude' => [],
@@ -862,7 +863,7 @@ function pfc_migrate_old(): bool {
     $cfg = [
         'enabled' => false, // stays off until the old plugin is removed, so the two never fight over the fans
         'log_changes' => $yes('LOG_CHANGES', 'yes'),
-        'identify' => ['low_pwm' => (int)($old['IDENTIFY_LOW_PWM'] ?? 51), 'seconds' => (int)($old['IDENTIFY_SECONDS'] ?? 5)],
+        'identify' => ['low_pwm' => (int)($old['IDENTIFY_LOW_PWM'] ?? 51), 'seconds' => (int)($old['IDENTIFY_SECONDS'] ?? 8)],
         'array' => [
             'include' => [
                 'Parity' => $yes('INCLUDE_PARITY', 'yes'), 'Data' => $yes('INCLUDE_DATA', 'yes'), 'Cache' => $yes('INCLUDE_CACHE', 'yes'),
@@ -2726,7 +2727,8 @@ if ((int)@file_get_contents(PFC_PIDFILE) === getmypid()) @unlink(PFC_PIDFILE);
  * PWM Fan Control - tests a single PWM output, started from the web UI.
  * Usage: php fantest.php identify|speed <fan key>
  *
- *   identify  Slows the fan down, then runs it at full speed, so you can see and hear which fan it is.
+ *   identify  Slows the fan down until it stops slowing, then runs it at full speed, so you can see and
+ *             hear which fan it is.
  *   speed     Steps the fan down from 100% and records the RPM at every step, until it stops (or 0% is
  *             reached). Then finds the speed it needs to start again, trying from the lowest speed it
  *             kept running at upwards. The fan stands still only for a few seconds at a time.
@@ -2746,6 +2748,7 @@ const PFC_SPEED_STEP   = 5;   // seconds per step going down: time for the RPM t
 const PFC_START_STEP   = 3;   // seconds per start try: a fan that starts does so within 1-2 seconds
 const PFC_FOLLOW_PWM   = 102; // from this step on, sensors that follow the speed changes are watched for a stop
 const PFC_NEEDED_EVERY = 2;   // seconds between checks whether the fan's group needs the fan
+const PFC_SETTLE_MAX   = 30;  // Identify: longest wait for a fan to finish slowing down
 
 $mode = $argv[1] ?? '';
 $key = $argv[2] ?? '';
@@ -2765,7 +2768,7 @@ $paired = pfc_confirmed_rpm($fans, $key);
 
 $low_pwm = max(0, min(255, (int)$cfg['identify']['low_pwm']));
 $seconds = max(3, min(30, (int)$cfg['identify']['seconds']));
-$total = $mode === 'identify' ? 2 * $seconds : count(PFC_SPEED_DOWN) * PFC_SPEED_STEP + 2;
+$total = $mode === 'identify' ? 2 * $seconds + 5 : count(PFC_SPEED_DOWN) * PFC_SPEED_STEP + 2;
 
 $state = [
     'key'      => $key,
@@ -2850,7 +2853,23 @@ if ($orig_enable !== null && $orig_enable !== 1) @file_put_contents("{$path}_ena
 
 $stopped = false;
 if ($mode === 'identify') {
-    $low = $hold('low', $low_pwm, $seconds);
+    // A fan takes longer to slow down than to speed up, so the slow step lasts until the RPM has
+    // stopped falling (at least $seconds, at most PFC_SETTLE_MAX), and the change is easy to see.
+    $watch = $paired ? [$paired] : array_keys($sensors);
+    $history = [];
+    $settled = function (array $rpm) use (&$history, $watch, $seconds): bool {
+        $history[] = $rpm;
+        $n = count($history);
+        if ($n < $seconds || $n < 4) return false;
+        foreach ($watch as $k) {
+            $now = (int)($rpm[$k] ?? 0);
+            $before = (int)($history[$n - 4][$k] ?? 0);
+            if ($now < $before * 0.97) return false; // still slowing down
+        }
+        return true;
+    };
+    $low = $hold('low', $low_pwm, max($seconds, PFC_SETTLE_MAX), $settled);
+    $total = count($state['samples']) + $seconds;
     $high = $low === null ? null : $hold('high', 255, $seconds);
     if ($high === null) $stopped = true;
     else $state['reacted'] = $reacting($low, $high);
