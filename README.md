@@ -41,7 +41,7 @@ Problems? Run `grep pwm.fan.control /var/log/syslog` and include the output in y
 2. In Unraid, go to *Plugins > Install Plugin* and paste:
 
    ```
-   https://git.int.idmedia.no/idmedia/unraid/pwm-fan-control/raw/branch/main/pwm.fan.control.plg
+   https://raw.githubusercontent.com/IDmedia/pwm-fan-control/main/pwm.fan.control.plg
    ```
 
 3. Open *Settings > Utilities > PWM Fan Control*.
@@ -276,7 +276,7 @@ should show the *not spinning* warning. Disabling fan control should put every f
 
 ## Credits
 
-- Based on the fan control script in [fan-control-script](https://git.int.idmedia.no/idmedia/unraid/fan-control-script)
+- Based on the fan control script in [fan-control-script](https://github.com/IDmedia/fan-control-script)
   and its contributors.
 
 This project is not affiliated with Unraid or Nvidia.

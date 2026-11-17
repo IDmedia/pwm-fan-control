@@ -12,8 +12,8 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 SRC="$HERE/source"
 OUT="$HERE/$NAME.plg"
 VERSION="${1:-$(date +%Y.%m.%d)}"
-AUTHOR="$(git -C "$HERE" config user.name 2>/dev/null || echo unknown)"
-PLUGIN_URL="${PLUGIN_URL:-https://git.int.idmedia.no/idmedia/unraid/pwm-fan-control/raw/branch/main/$NAME.plg}"
+AUTHOR="${AUTHOR:-IDmedia}"
+PLUGIN_URL="${PLUGIN_URL:-https://raw.githubusercontent.com/IDmedia/pwm-fan-control/main/$NAME.plg}"
 
 # Prints a file wrapped in CDATA, with Windows line endings removed
 cdata() {

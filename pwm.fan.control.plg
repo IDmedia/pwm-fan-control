@@ -1,9 +1,9 @@
 <?xml version='1.0' standalone='yes'?>
 <!DOCTYPE PLUGIN [
 <!ENTITY name      "pwm.fan.control">
-<!ENTITY author    "unknown">
+<!ENTITY author    "IDmedia">
 <!ENTITY version   "2026.11.17">
-<!ENTITY pluginURL "https://git.int.idmedia.no/idmedia/unraid/pwm-fan-control/raw/branch/main/pwm.fan.control.plg">
+<!ENTITY pluginURL "https://raw.githubusercontent.com/IDmedia/pwm-fan-control/main/pwm.fan.control.plg">
 <!ENTITY emhttp    "/usr/local/emhttp/plugins/&name;">
 ]>
 <PLUGIN name="&name;" author="&author;" version="&version;" pluginURL="&pluginURL;" min="6.12.0" icon="snowflake-o" launch="Settings/PWMFanControl">
