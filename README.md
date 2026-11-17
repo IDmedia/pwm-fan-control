@@ -187,7 +187,7 @@ General:
 | Send notifications | Unraid alerts for problems that last more than a minute, for crashes and watchdog restarts, and a notice when a problem is resolved. |
 | Drivers to load | Fan controller drivers loaded at boot and when the settings are saved, before fan control starts. Several separated by `;`, module options allowed, for example `it87 force_id=0x8628; nct6775`. Leave empty when another plugin loads the driver. |
 | Identify: slow speed | Speed used for the slow step of *Identify*. Default 20%, which slows fans clearly without stopping them. 0% stops most fans. |
-| Identify: seconds per step | How long the slow and the full speed step of *Identify* last. 3-30, default 5. |
+| Identify: seconds per step | How long the slow and the full speed step of *Identify* last at least. The slow step goes on until the fan has stopped slowing down, at most 30 seconds. 3-30, default 8. |
 | Disk types to monitor | Which disk types the array disks source looks at: parity, data, pools, unassigned devices, flash. Single disks can be unticked in the disk list, for example an NVMe cache that runs hot but isn't cooled by the case fans. |
 | Full speed during parity check | Whether the array disks source asks for its max speed while a parity check or rebuild runs. |
 

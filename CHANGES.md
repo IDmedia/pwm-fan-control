@@ -2,7 +2,7 @@
 - Requires Unraid 7.4 or newer
 - Speed test: steps a fan down from 100% until it stops, then finds the speed it needs to start again; the fan stands still only for a few seconds at a time
 - Fan tests don't start, and stop right away, when the fan's group needs it (temperature at or above high, source unreadable, parity check)
-- Identify slows fans to 20% by default instead of stopping them, 5 seconds per step
+- Identify slows fans to 20% by default instead of stopping them, and keeps them slow until they have stopped slowing down (8 seconds per step by default)
 - Warns when a group's min speed is below the speed one of its fans needs to start
 - Warns when a fan stops spinning (0 RPM) while it should run, and when another program changes a fan's speed
 - Problems are sent as Unraid alert notifications when they last more than a minute, a crash or watchdog restart right away, and a notice when resolved

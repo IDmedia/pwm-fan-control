@@ -3,7 +3,8 @@
  * PWM Fan Control - tests a single PWM output, started from the web UI.
  * Usage: php fantest.php identify|speed <fan key>
  *
- *   identify  Slows the fan down, then runs it at full speed, so you can see and hear which fan it is.
+ *   identify  Slows the fan down until it stops slowing, then runs it at full speed, so you can see and
+ *             hear which fan it is.
  *   speed     Steps the fan down from 100% and records the RPM at every step, until it stops (or 0% is
  *             reached). Then finds the speed it needs to start again, trying from the lowest speed it
  *             kept running at upwards. The fan stands still only for a few seconds at a time.
@@ -23,6 +24,7 @@ const PFC_SPEED_STEP   = 5;   // seconds per step going down: time for the RPM t
 const PFC_START_STEP   = 3;   // seconds per start try: a fan that starts does so within 1-2 seconds
 const PFC_FOLLOW_PWM   = 102; // from this step on, sensors that follow the speed changes are watched for a stop
 const PFC_NEEDED_EVERY = 2;   // seconds between checks whether the fan's group needs the fan
+const PFC_SETTLE_MAX   = 30;  // Identify: longest wait for a fan to finish slowing down
 
 $mode = $argv[1] ?? '';
 $key = $argv[2] ?? '';
@@ -42,7 +44,7 @@ $paired = pfc_confirmed_rpm($fans, $key);
 
 $low_pwm = max(0, min(255, (int)$cfg['identify']['low_pwm']));
 $seconds = max(3, min(30, (int)$cfg['identify']['seconds']));
-$total = $mode === 'identify' ? 2 * $seconds : count(PFC_SPEED_DOWN) * PFC_SPEED_STEP + 2;
+$total = $mode === 'identify' ? 2 * $seconds + 5 : count(PFC_SPEED_DOWN) * PFC_SPEED_STEP + 2;
 
 $state = [
     'key'      => $key,
@@ -127,7 +129,23 @@ if ($orig_enable !== null && $orig_enable !== 1) @file_put_contents("{$path}_ena
 
 $stopped = false;
 if ($mode === 'identify') {
-    $low = $hold('low', $low_pwm, $seconds);
+    // A fan takes longer to slow down than to speed up, so the slow step lasts until the RPM has
+    // stopped falling (at least $seconds, at most PFC_SETTLE_MAX), and the change is easy to see.
+    $watch = $paired ? [$paired] : array_keys($sensors);
+    $history = [];
+    $settled = function (array $rpm) use (&$history, $watch, $seconds): bool {
+        $history[] = $rpm;
+        $n = count($history);
+        if ($n < $seconds || $n < 4) return false;
+        foreach ($watch as $k) {
+            $now = (int)($rpm[$k] ?? 0);
+            $before = (int)($history[$n - 4][$k] ?? 0);
+            if ($now < $before * 0.97) return false; // still slowing down
+        }
+        return true;
+    };
+    $low = $hold('low', $low_pwm, max($seconds, PFC_SETTLE_MAX), $settled);
+    $total = count($state['samples']) + $seconds;
     $high = $low === null ? null : $hold('high', 255, $seconds);
     if ($high === null) $stopped = true;
     else $state['reacted'] = $reacting($low, $high);

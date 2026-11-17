@@ -130,7 +130,7 @@ $pfc_v = @filemtime("/usr/local/emhttp$pfc_dir/js/pfc.js");
         (e.g. "it87 force_id=0x8628"). Leave empty if another plugin (e.g. Dynamix System Temperature) loads the driver.</span>
     </dd></dl>
     <dl><dt>Identify: slow speed:</dt><dd><input type="number" min="0" max="100" class="pfc-narrow" data-cfg="identify.low_pwm" data-type="pct"> % <span class="pfc-muted">Default 20%: clearly slower, without stopping the fan. 0% stops most fans.</span></dd></dl>
-    <dl><dt>Identify: seconds per step:</dt><dd><input type="number" min="3" max="30" class="pfc-narrow" data-cfg="identify.seconds" data-type="int"></dd></dl>
+    <dl><dt>Identify: seconds per step:</dt><dd><input type="number" min="3" max="30" class="pfc-narrow" data-cfg="identify.seconds" data-type="int"> <span class="pfc-muted">The slow step goes on until the fan has stopped slowing down, at most 30 seconds.</span></dd></dl>
     <dl><dt>&nbsp;</dt><dd>
       <button type="button" class="pfc-apply">Apply</button>
       <button type="button" class="pfc-reset">Discard</button>
