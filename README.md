@@ -226,7 +226,12 @@ of warnings.
   is in DC mode in the BIOS. If you saw or heard a fan change speed, it still works: pick its RPM sensor by hand or
   choose *None*.
 - **A fan keeps jumping between speeds, or "its speed keeps being changed by something else":** another program
-  controls the same fan. See *Conflict with other fan control*.
+  controls the same fan, or the BIOS takes the fan back. The syslog says which: `grep pwm.fan.control /var/log/syslog`
+  shows the speed and mode that were set and found. If the speed changed while the mode stayed manual, another
+  program writes to the fan: check the **Dynamix Auto Fan Control** plugin, scripts in **User Scripts** (such as an
+  old `fan_speed_control.sh`), and `ps aux | grep -iE 'fan|pwm'`. If the mode changed, the BIOS or the chip took the
+  fan back: set the header to manual or full speed in the BIOS, or disable the BIOS fan control for that header.
+  See also *Conflict with other fan control*.
 - **"Fan ... is not spinning (0 RPM)":** check the fan and its cable. If the fan was set below the speed it needs to
   start, raise the group's min speed (run a speed test to find it). If the wrong RPM sensor is paired, run *Identify*
   again or pick the sensor by hand.

@@ -2,6 +2,7 @@
 - Requires Unraid 7.4 or newer
 - Fan icon from Unraid's own icon set instead of the snowflake
 - Speed changes are no longer logged to syslog by default, problems still are
+- When a fan's speed keeps being changed by something else, the syslog says what was set and found, and whether the mode changed (BIOS) or only the speed (another program)
 - Speed test: steps a fan down from 100% until it stops, then finds the speed it needs to start again; the fan stands still only for a few seconds at a time
 - Fan tests don't start, and stop right away, when the fan's group needs it (temperature at or above high, source unreadable, parity check)
 - Identify slows fans to 20% by default instead of stopping them, and keeps them slow until they have stopped slowing down (8 seconds per step by default)

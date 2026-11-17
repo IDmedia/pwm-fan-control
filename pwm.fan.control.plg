@@ -13,6 +13,7 @@
 - Requires Unraid 7.4 or newer
 - Fan icon from Unraid's own icon set instead of the snowflake
 - Speed changes are no longer logged to syslog by default, problems still are
+- When a fan's speed keeps being changed by something else, the syslog says what was set and found, and whether the mode changed (BIOS) or only the speed (another program)
 - Speed test: steps a fan down from 100% until it stops, then finds the speed it needs to start again; the fan stands still only for a few seconds at a time
 - Fan tests don't start, and stop right away, when the fan's group needs it (temperature at or above high, source unreadable, parity check)
 - Identify slows fans to 20% by default instead of stopping them, and keeps them slow until they have stopped slowing down (8 seconds per step by default)
@@ -1212,6 +1213,16 @@ final class PfcController {
         [$pwm, $enable] = $this->written[$key];
         $changed = ($fan['value'] !== null && abs($fan['value'] - $pwm) > 5) || ($fan['enable'] !== null && $fan['enable'] !== $enable);
         $this->conflicts[$key] = $changed ? ($this->conflicts[$key] ?? 0) + 1 : 0;
+        if ($this->conflicts[$key] === self::CONFLICT_TICKS) {
+            // Once per episode, what exactly changed: tells another program (speed changed, mode still
+            // manual) apart from the BIOS or the chip taking the fan back (mode changed).
+            $mode = fn($e) => $e === null ? 'no mode' : ($e === 1 ? 'manual mode (1)' : ($e === 0 ? 'mode 0 (full speed)' : "automatic mode ($e)"));
+            $found = ($fan['value'] ?? '?') . ' in ' . $mode($fan['enable']);
+            pfc_log("Fan \"$name\" ({$fan['path']}): set to $pwm in manual mode, but found $found. "
+                . ($fan['enable'] !== null && $fan['enable'] !== $enable
+                    ? 'The mode was changed: the BIOS, the chip or another program took the fan back.'
+                    : 'The speed was changed while in manual mode: another program writes to this fan.'));
+        }
         if ($this->conflicts[$key] >= self::CONFLICT_TICKS) {
             $warnings[] = "Fan \"$name\": its speed keeps being changed by something else. Is another fan control running?";
         }
