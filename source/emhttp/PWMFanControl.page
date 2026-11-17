@@ -116,8 +116,8 @@ $pfc_v = @filemtime("/usr/local/emhttp$pfc_dir/js/pfc.js");
       </select>
     </dd></dl>
     <dl><dt>Log speed changes to syslog:</dt><dd>
-      <select data-cfg="log_changes" data-type="bool"><option value="true">Yes</option><option value="false">No</option></select>
-      <span class="pfc-muted">Changes of 5% or more, and every switch to or from full speed.</span>
+      <select data-cfg="log_changes" data-type="bool"><option value="false">No</option><option value="true">Yes</option></select>
+      <span class="pfc-muted">Changes of 5% or more, and every switch to or from full speed. Useful while tuning curves. Problems are always logged.</span>
     </dd></dl>
     <dl><dt>Send notifications:</dt><dd>
       <select data-cfg="notify" data-type="bool"><option value="true">Yes</option><option value="false">No</option></select>

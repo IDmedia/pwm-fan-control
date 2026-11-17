@@ -183,7 +183,7 @@ General:
 |---|---|
 | Enable fan control | While *No*, the plugin never changes a fan. |
 | Check temperatures every | 2, 3, 5, 10, 15 or 30 seconds. Default 5. |
-| Log speed changes to syslog | Logs changes of 5% or more, and every switch to or from full speed. |
+| Log speed changes to syslog | Logs changes of 5% or more, and every switch to or from full speed. Useful while tuning curves. Default No. Problems (stalled or moved fans, unreadable sources, failsafe, crashes) are always logged. |
 | Send notifications | Unraid alerts for problems that last more than a minute, for crashes and watchdog restarts, and a notice when a problem is resolved. |
 | Drivers to load | Fan controller drivers loaded at boot and when the settings are saved, before fan control starts. Several separated by `;`, module options allowed, for example `it87 force_id=0x8628; nct6775`. Leave empty when another plugin loads the driver. |
 | Identify: slow speed | Speed used for the slow step of *Identify*. Default 20%, which slows fans clearly without stopping them. 0% stops most fans. |

@@ -3,7 +3,7 @@
  * PWM Fan Control - settings and fan groups (config.json on the flash drive).
  *
  * {
- *   "enabled": false, "interval": 5, "log_changes": true, "notify": true, "drivers": "nct6775",
+ *   "enabled": false, "interval": 5, "log_changes": false, "notify": true, "drivers": "nct6775",
  *   "identify": {"low_pwm": 51, "seconds": 8},
  *   "array": {"include": {"Parity": true, ...}, "exclude": ["disk3"], "parity_full_speed": true},
  *   "groups": [{"id": "g1a2b", "name": "Array fans", "fans": ["<fan key>"], "ramp_down": 30,
@@ -16,7 +16,7 @@ function pfc_default_config(): array {
     return [
         'enabled'     => false,
         'interval'    => 5,
-        'log_changes' => true,
+        'log_changes' => false,
         'notify'      => true,
         'drivers'     => '',      // kernel modules to load, e.g. "nct6775" or "it87 force_id=0x8628; nct6775"
         'identify'    => ['low_pwm' => 51, 'seconds' => 8],   // 20%: slows fans clearly without stopping them
@@ -172,7 +172,7 @@ function pfc_migrate_old(): bool {
     $yes = fn($k, $d) => ($old[$k] ?? $d) === 'yes';
     $cfg = [
         'enabled' => false, // stays off until the old plugin is removed, so the two never fight over the fans
-        'log_changes' => $yes('LOG_CHANGES', 'yes'),
+        'log_changes' => $yes('LOG_CHANGES', 'no'),
         'identify' => ['low_pwm' => (int)($old['IDENTIFY_LOW_PWM'] ?? 51), 'seconds' => (int)($old['IDENTIFY_SECONDS'] ?? 8)],
         'array' => [
             'include' => [
