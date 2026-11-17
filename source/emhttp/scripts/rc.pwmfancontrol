@@ -12,6 +12,14 @@ running() {
     [[ -f "$PIDFILE" ]] && kill -0 "$(cat "$PIDFILE" 2>/dev/null)" 2>/dev/null
 }
 
+# Unraid alert notification (if enabled), at most once an hour so a service that keeps failing doesn't flood
+alert() {
+    local flag="/tmp/$NAME/watchdog.notified"
+    [[ -f "$flag" ]] && (( $(date +%s) - $(stat -c %Y "$flag") < 3600 )) && return
+    mkdir -p "/tmp/$NAME" && touch "$flag"
+    "$PHP" -r 'require $argv[1]; pfc_notify("Service restarted", $argv[2]);' "$PLUGIN/include/common.php" "$1" >/dev/null 2>&1
+}
+
 start() {
     if running; then
         echo "PWM Fan Control is already running"
@@ -52,6 +60,7 @@ case "$1" in
         # Called by cron every minute while fan control is enabled
         if ! running; then
             logger -t "$NAME" "Service was not running, restarting it"
+            alert "The fan control service was not running and has been restarted. Check the syslog for the reason."
             start >/dev/null
         else
             # The service writes its status on every check (at most every 30s). If it hasn't
@@ -60,6 +69,7 @@ case "$1" in
             last=$(stat -c %Y "$STATUS" 2>/dev/null || stat -c %Y "$PIDFILE" 2>/dev/null || echo "$now")
             if (( now - last > 90 )); then
                 logger -t "$NAME" "Service stopped responding, restarting it"
+                alert "The fan control service stopped responding and has been restarted. Fans ran at their last speed in the meantime. Check the syslog for the reason."
                 stop >/dev/null
                 start >/dev/null
             fi

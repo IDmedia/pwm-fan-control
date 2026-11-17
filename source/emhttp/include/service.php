@@ -8,8 +8,12 @@ function pfc_daemon_pid(): ?int {
     return pfc_pid_alive($pid) ? $pid : null;
 }
 
-/** Starts or stops the service and its watchdog cron job to match the config. */
+/**
+ * Loads the configured drivers, then starts or stops the service and its watchdog cron job to match
+ * the config. Runs at boot (install.sh) and whenever the settings are saved.
+ */
 function pfc_apply_service(array $cfg): void {
+    pfc_load_drivers($cfg);
     if ($cfg['enabled']) {
         pfc_write_atomic(PFC_CRON, "# PWM Fan Control watchdog (generated, do not edit)\n* * * * * " . PFC_RC . " watchdog >/dev/null 2>&1\n\n", true);
     } else {

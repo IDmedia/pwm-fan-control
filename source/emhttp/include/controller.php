@@ -13,15 +13,23 @@
  *   - A crash of the service leaves the fans at full speed until the watchdog restarts it.
  *   - Only a deliberate stop (disabled, removed, signal) hands the fans back to the BIOS.
  *
- * It also watches for problems and reports them as warnings (status page, syslog, notifications):
+ * It also watches for problems and reports them as warnings (status page, syslog, Unraid alert
+ * notifications):
  *   - a fan that stays at 0 RPM while it should spin (needs a confirmed RPM sensor),
+ *   - a fan that runs clearly faster or slower than its speed test measured at the same speed, which
+ *     usually means a different fan is now connected to that header (fans were moved),
  *   - a fan whose speed or mode is changed by something else (another fan control),
- *   - fans that can't be found or written.
+ *   - fans that can't be found or written (driver not loaded, hardware changed),
+ *   - temperature sources that can't be read, and errors of the service itself.
  */
 final class PfcController {
     private const SOURCE_RETRIES = 1;     // failed reads of a source tolerated before full speed
     private const STALL_SECONDS  = 20;    // 0 RPM for this long while it should spin = stalled
     private const STALL_MIN_PWM  = 77;    // 30%: below this, without a speed test, 0 RPM may be normal
+    private const SETTLE_SECONDS = 15;    // time a fan needs to reach its speed after a change
+    private const MISMATCH_SECONDS = 60;  // RPM far from the speed test for this long = different fan
+    private const MISMATCH_LOW   = 0.65;  // RPM below 65% ...
+    private const MISMATCH_HIGH  = 1.5;   // ... or above 150% of the speed test = mismatch
     private const CONFLICT_TICKS = 2;     // checks in a row a fan has to be changed by someone else
     private const NOTIFY_AFTER   = 60;    // seconds a warning has to persist before a notification
     private const RESOLVE_TICKS  = 3;     // checks in a row a warning has to be gone to count as resolved
@@ -39,11 +47,14 @@ final class PfcController {
     private array $written = [];      // fan key => [pwm we set, enable we set]
     private array $conflicts = [];    // fan key => checks in a row changed by someone else
     private array $zeroSince = [];    // fan key => time it was first seen at 0 RPM while it should spin
+    private array $setAt = [];        // fan key => [time, pwm] of the last real speed change
+    private array $mismatchSince = []; // fan key => time its RPM was first seen far from the speed test
+    private ?array $hwCheck = null;   // pfc_hardware_check() while fans are missing, refreshed every minute
+    private array $lastWarnings = []; // warnings of the last good check
     private array $warnSince = [];    // warning => first seen
     private array $notified = [];     // warning => true once a notification was sent
     private array $warnMissing = [];  // warning => checks in a row it was gone
     private int $lastHistory = 0;
-    private bool $failsafe = false;   // fans were set to full speed after an error in the loop
 
     public bool $running = true;
 
@@ -54,7 +65,6 @@ final class PfcController {
             $start = microtime(true);
             try {
                 if (!$this->tick()) break;
-                $this->failsafe = false;
             } catch (Throwable $e) {
                 $this->onError($e);
             }
@@ -88,7 +98,8 @@ final class PfcController {
         }
         if ($fansChanged) $this->saveFans();
 
-        $this->report($warnings, $now);
+        $this->lastWarnings = array_values(array_unique($warnings));
+        $this->report($this->lastWarnings, $now);
         $used = $this->usedSources($sources);
         pfc_write_json(PFC_STATUS, [
             'time' => $now, 'pid' => getmypid(), 'interval' => $cfg['interval'],
@@ -134,7 +145,7 @@ final class PfcController {
                     $hw = pfc_scan_hwmon();
                     foreach (array_keys($gone) as $key) {
                         pfc_release_fan($fans, $key, $hw);
-                        unset($this->written[$key], $this->conflicts[$key], $this->zeroSince[$key]);
+                        unset($this->written[$key], $this->conflicts[$key], $this->zeroSince[$key], $this->setAt[$key], $this->mismatchSince[$key]);
                     }
                     pfc_save_fans($fans);
                     $this->fansHash = null;
@@ -214,20 +225,26 @@ final class PfcController {
         foreach ($g['fans'] as $key) {
             $name = $this->fanName($key, $hw);
             $fan = $hw['pwm'][$key] ?? null;
-            if (!$fan) { $warnings[] = "Fan \"$name\" in \"{$g['name']}\" was not found. Is its sensor driver loaded?"; continue; }
+            if (!$fan) { $warnings[] = $this->missingFan($key, $name, $g['name'], $hw, $now); continue; }
             if (!$fan['writable']) { $warnings[] = "Fan \"$name\" can't be controlled (not writable)."; continue; }
             $count++;
             if ($test && ($test['key'] ?? '') === $key) {
                 // Being tested from the web UI: leave it alone, and don't mistake the test for a conflict
-                unset($this->written[$key], $this->zeroSince[$key]);
+                unset($this->written[$key], $this->zeroSince[$key], $this->setAt[$key], $this->mismatchSince[$key]);
                 continue;
             }
             $this->checkConflict($fan, $name, $warnings);
             $error = pfc_drive_fan($this->fans, $fan, $pwm, $fansChanged);
             if ($error) $warnings[] = "Fan \"$name\": $error.";
             $this->written[$key] = [$pwm, 1];
-            $this->checkStall($fan, $name, $pwm, $hw, $now, $warnings);
+            // Small adjustments don't restart the settle time, the mismatch check is tolerant enough
+            if (!isset($this->setAt[$key]) || abs($this->setAt[$key][1] - $pwm) > 13) $this->setAt[$key] = [$now, $pwm];
+            $rpmKey = pfc_confirmed_rpm($this->fans, $key);
+            $rpm = $rpmKey ? ($hw['rpm'][$rpmKey]['rpm'] ?? null) : null;
+            $this->checkStall($key, $name, $pwm, $rpmKey, $rpm, $now, $warnings);
+            $this->checkMismatch($key, $name, $pwm, $rpmKey, $rpm, $now, $warnings);
         }
+        if ($count) $this->hwCheck = null;
 
         // Log meaningful changes only (>= 5%, or entering/leaving full speed)
         $prev = $this->logged[$gid] ?? null;
@@ -265,14 +282,26 @@ final class PfcController {
         }
     }
 
+    /**
+     * A fan in a group that isn't there. Says why, as far as we can tell: the chip is missing (driver not
+     * loaded, see the hardware check) or the chip is there but not this output (hardware changed).
+     */
+    private function missingFan(string $key, string $name, string $group, array $hw, int $now): string {
+        $chip = strstr($key, '@', true) ?: strstr($key, '/', true);
+        $msg = "Fan \"$name\" in \"$group\" was not found, it is not controlled.";
+        foreach ($hw['pwm'] as $p) {
+            if ($p['chip'] === $chip) return "$msg The $chip chip is there, but not this output: was the hardware or BIOS changed? Add the fan to the group again.";
+        }
+        if (!$this->hwCheck || $now - $this->hwCheck['time'] >= 60) $this->hwCheck = ['time' => $now] + pfc_hardware_check($hw);
+        $hint = pfc_hardware_hint($this->hwCheck, true) ?? "Is the driver for the $chip chip loaded?";
+        return "$msg $hint";
+    }
+
     /** A fan that reports 0 RPM for a while although it should spin. Needs a confirmed RPM sensor. */
-    private function checkStall(array $fan, string $name, int $pwm, array $hw, int $now, array &$warnings): void {
-        $key = $fan['key'];
-        $rpmKey = pfc_confirmed_rpm($this->fans, $key);
-        $rpm = $rpmKey ? ($hw['rpm'][$rpmKey]['rpm'] ?? null) : null;
+    private function checkStall(string $key, string $name, int $pwm, ?string $rpmKey, ?int $rpm, int $now, array &$warnings): void {
         // With a speed test we know where the fan starts, otherwise assume it spins from 30%
-        $t = $this->fans['pwm'][$key]['test'] ?? null;
-        $spinsFrom = is_array($t) && !empty($t['done']) ? ($t['start_pwm'] ?? $t['min_pwm'] ?? 0) : self::STALL_MIN_PWM;
+        $t = $this->speedTest($key, $rpmKey);
+        $spinsFrom = $t ? ($t['start_pwm'] ?? $t['min_pwm'] ?? 0) : self::STALL_MIN_PWM;
         if ($rpm === null && $rpmKey && isset($this->zeroSince[$key])) return; // unreadable for a moment: keep counting
         if ($rpm !== 0 || $pwm < max(1, $spinsFrom)) {
             unset($this->zeroSince[$key]);
@@ -280,7 +309,37 @@ final class PfcController {
         }
         $this->zeroSince[$key] = $this->zeroSince[$key] ?? $now;
         if ($now - $this->zeroSince[$key] >= self::STALL_SECONDS) {
-            $warnings[] = "Fan \"$name\" is not spinning (0 RPM). Check the fan and its cable.";
+            $warnings[] = "Fan \"$name\" is not spinning (0 RPM). Check the fan and its cable, and whether it was moved to another header.";
+        }
+    }
+
+    /** The finished speed test of a fan, if it was measured with its current RPM sensor. */
+    private function speedTest(string $key, ?string $rpmKey): ?array {
+        $t = $this->fans['pwm'][$key]['test'] ?? null;
+        return is_array($t) && !empty($t['done']) && ($t['rpm_key'] ?? null) === $rpmKey ? $t : null;
+    }
+
+    /**
+     * A fan that runs far faster or slower than its speed test measured at the same speed. Fan names and
+     * groups belong to the header, so after moving fans to other headers the wrong fans would follow the
+     * wrong temperatures without anything failing. Different fan models have quite different speeds, so
+     * this catches most mix-ups. Needs a confirmed RPM sensor and a speed test.
+     */
+    private function checkMismatch(string $key, string $name, int $pwm, ?string $rpmKey, ?int $rpm, int $now, array &$warnings): void {
+        $t = $this->speedTest($key, $rpmKey);
+        $expected = $t ? pfc_expected_rpm($t['points'] ?? [], $pwm) : null;
+        $settled = $now - ($this->setAt[$key][0] ?? $now) >= self::SETTLE_SECONDS;
+        if ($rpm === null && isset($this->mismatchSince[$key])) return; // unreadable for a moment: keep counting
+        if (!$settled || !$rpm || $expected === null || $expected < 300
+            || ($rpm >= $expected * self::MISMATCH_LOW && $rpm <= $expected * self::MISMATCH_HIGH)) {
+            unset($this->mismatchSince[$key]);
+            return;
+        }
+        $this->mismatchSince[$key] = $this->mismatchSince[$key] ?? $now;
+        if ($now - $this->mismatchSince[$key] >= self::MISMATCH_SECONDS) {
+            // Keep the text stable (no live numbers), warnings are tracked by their text
+            $warnings[] = "Fan \"$name\" runs much " . ($rpm > $expected ? 'faster' : 'slower') . ' than in its speed test. '
+                . 'Was a fan moved to another header? Check with Identify and run the speed test again.';
         }
     }
 
@@ -300,13 +359,13 @@ final class PfcController {
             }
             if (empty($this->notified[$w]) && $now - $this->warnSince[$w] >= self::NOTIFY_AFTER) {
                 $this->notified[$w] = true;
-                if ($this->cfg['notify']) pfc_notify('Fan problem', $w, 'warning');
+                pfc_notify('Fan problem', $w, 'alert');
             }
         }
         foreach (array_diff(array_keys($this->warnSince), $current) as $w) {
             $this->warnMissing[$w] = ($this->warnMissing[$w] ?? 0) + 1;
             if ($this->warnMissing[$w] < self::RESOLVE_TICKS) continue;
-            if (!empty($this->notified[$w]) && $this->cfg['notify']) pfc_notify('Fan problem resolved', $w, 'normal');
+            if (!empty($this->notified[$w])) pfc_notify('Problem resolved', $w, 'normal');
             pfc_log("Resolved: $w");
             unset($this->warnSince[$w], $this->notified[$w], $this->warnMissing[$w]);
         }
@@ -323,14 +382,18 @@ final class PfcController {
         pfc_write_json(PFC_HISTORY, $history);
     }
 
-    /** An error in the loop: run at full speed, tell the user, try again next check. */
+    /**
+     * An error in the loop: run at full speed, tell the user, try again next check. The warnings of the
+     * last good check stay active, so they aren't reported as resolved while the error lasts.
+     */
     private function onError(Throwable $e): void {
+        $now = time();
         $msg = 'Internal error, fans run at full speed: ' . $e->getMessage() . ' (' . basename($e->getFile()) . ':' . $e->getLine() . ')';
-        if (!$this->failsafe) pfc_log($msg);
-        $this->failsafe = true;
         $this->written = [];
         try { $this->failsafe(); } catch (Throwable $ignored) {}
-        pfc_write_json(PFC_STATUS, ['time' => time(), 'pid' => getmypid(), 'interval' => $this->cfg['interval'] ?? 5,
-            'groups' => [], 'sources' => [], 'warnings' => [$msg]]);
+        $warnings = array_merge($this->lastWarnings, [$msg]);
+        try { $this->report($warnings, $now); } catch (Throwable $ignored) {}
+        pfc_write_json(PFC_STATUS, ['time' => $now, 'pid' => getmypid(), 'interval' => $this->cfg['interval'] ?? 5,
+            'groups' => [], 'sources' => [], 'warnings' => $warnings]);
     }
 }

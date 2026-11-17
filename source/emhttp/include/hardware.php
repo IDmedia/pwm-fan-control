@@ -1,6 +1,7 @@
 <?php
 /*
- * PWM Fan Control - fans and kernel sensors (/sys/class/hwmon) and fan names (fans.json).
+ * PWM Fan Control - fans and kernel sensors (/sys/class/hwmon), fan names (fans.json), fan drivers and
+ * the hardware check.
  *
  * fans.json on the flash drive:
  * {
@@ -86,6 +87,80 @@ function pfc_scan_hwmon(): array {
     return $result;
 }
 
+/* ------------------------------------------------------- drivers and setup */
+
+// Drivers of motherboard/controller chips that offer PWM fan outputs
+const PFC_FAN_DRIVERS = ['nct6775', 'nct6683', 'nct6687', 'it87', 'f71882fg', 'f71805f', 'w83627ehf', 'w83627hf', 'w83795',
+    'sch5627', 'sch5636', 'asus_ec_sensors', 'dell_smm_hwmon', 'thinkpad_acpi', 'applesmc', 'pwm_fan', 'emc2305', 'max6650'];
+
+/** Loads the kernel modules from the "drivers" setting that aren't loaded yet. Returns the errors. */
+function pfc_load_drivers(array $cfg): array {
+    $errors = [];
+    foreach (pfc_driver_list($cfg) ?? [] as $module => $options) {
+        if (is_dir(PFC_MODULES . '/' . str_replace('-', '_', $module))) continue;
+        exec(PFC_MODPROBE . ' ' . implode(' ', array_map('escapeshellarg', array_merge([$module], $options))) . ' 2>&1', $out, $rc);
+        if ($rc !== 0) {
+            $errors[] = "Could not load driver $module" . ($out ? ': ' . trim(implode(' ', $out)) : '');
+            pfc_log(end($errors));
+        } else {
+            pfc_log("Loaded driver $module");
+        }
+        $out = [];
+    }
+    if (!$errors) @unlink(PFC_HW_CACHE);
+    return $errors;
+}
+
+/**
+ * Checks what is needed to control fans, for the hardware check in the web UI and for warnings:
+ *   drivers      loaded fan controller drivers
+ *   lax          acpi_enforce_resources=lax is on the kernel command line
+ *   conflicts    kernel log lines about ACPI resource conflicts (the reason "lax" is needed)
+ *   pwm/writable number of PWM outputs found / writable
+ * The kernel log part is cached for a minute, it can be large.
+ */
+function pfc_hardware_check(?array $hw = null): array {
+    $hw = $hw ?? pfc_scan_hwmon();
+    $cache = pfc_read_json(PFC_HW_CACHE);
+    if (!is_array($cache) || time() - ($cache['time'] ?? 0) > 60) {
+        exec(PFC_DMESG . ' 2>/dev/null', $log);
+        $conflicts = [];
+        foreach ($log as $line) {
+            if (preg_match('/conflicts with OpRegion|resource conflict|acpi_enforce_resources/i', $line)) $conflicts[] = trim($line);
+        }
+        $cache = ['time' => time(), 'conflicts' => array_slice(array_values(array_unique($conflicts)), -6)];
+        pfc_write_json(PFC_HW_CACHE, $cache);
+    }
+    return [
+        'drivers'   => array_values(array_filter(PFC_FAN_DRIVERS, fn($m) => is_dir(PFC_MODULES . "/$m"))),
+        'lax'       => (bool)preg_match('/(^|\s)acpi_enforce_resources=lax(\s|$)/', (string)@file_get_contents(PFC_CMDLINE)),
+        'conflicts' => $cache['conflicts'],
+        'pwm'       => count($hw['pwm']),
+        'writable'  => count(array_filter($hw['pwm'], fn($p) => $p['writable'])),
+    ];
+}
+
+/**
+ * What to do when fans can't be found or controlled, based on pfc_hardware_check(). Null if all looks fine.
+ * $missing: a fan in a group is missing although other outputs work (its chip may be the one in conflict).
+ */
+function pfc_hardware_hint(array $check, bool $missing = false): ?string {
+    if ($check['conflicts'] && !$check['lax'] && ($missing || !$check['writable'])) {
+        return 'The kernel log shows an ACPI resource conflict, which keeps the fan driver from using the chip. '
+            . 'Add acpi_enforce_resources=lax to the boot options (Main > Flash > Syslinux Configuration, on the "append" line) and reboot.';
+    }
+    if (!$check['drivers']) {
+        return 'No fan controller driver is loaded. Enter it under "Drivers to load" in the settings (e.g. nct6775 or it87), '
+            . 'or let the Dynamix System Temperature plugin load it.';
+    }
+    if (!$check['pwm']) {
+        return 'The driver ' . implode(', ', $check['drivers']) . ' is loaded but offers no fan outputs. '
+            . ($check['lax'] ? 'Your board may need a different driver.' : 'Your board may need acpi_enforce_resources=lax in the boot options, or a different driver.');
+    }
+    if (!$check['writable']) return 'Fan outputs were found but none can be written. The plugin has to run as root.';
+    return null;
+}
+
 function pfc_enable_mode_name($enable): string {
     $names = [0 => 'Full speed', 1 => 'Manual', 2 => 'Thermal cruise', 3 => 'Fan speed cruise', 4 => 'Smart Fan III', 5 => 'Smart Fan IV'];
     return $enable === null ? 'n/a' : ($names[$enable] ?? "Mode $enable");
@@ -95,6 +170,25 @@ function pfc_enable_mode_name($enable): string {
 function pfc_confirmed_rpm(array $fans, string $key): ?string {
     $rpm = $fans['pwm'][$key]['rpm'] ?? null;
     return is_string($rpm) && $rpm !== 'none' ? $rpm : null;
+}
+
+/**
+ * The RPM a speed test measured at $pwm, interpolated between its steps. Null below the lowest
+ * speed the fan kept running at, where it may be stopped.
+ */
+function pfc_expected_rpm(array $points, int $pwm): ?float {
+    $running = array_values(array_filter($points, fn($p) => is_array($p) && (int)($p[1] ?? 0) > 0));
+    if (!$running) return null;
+    usort($running, fn($a, $b) => $a[0] <=> $b[0]);
+    if ($pwm < $running[0][0]) return null;
+    $prev = $running[0];
+    foreach ($running as $p) {
+        if ($pwm <= $p[0]) {
+            return $p[0] === $prev[0] ? (float)$p[1] : $prev[1] + ($p[1] - $prev[1]) * ($pwm - $prev[0]) / ($p[0] - $prev[0]);
+        }
+        $prev = $p;
+    }
+    return (float)$prev[1];
 }
 
 /**

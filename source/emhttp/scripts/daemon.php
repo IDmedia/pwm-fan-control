@@ -22,8 +22,10 @@ $finished = false;
 register_shutdown_function(function () use ($controller, &$finished) {
     if ($finished) return;
     $error = error_get_last();
-    pfc_log('Crashed, fans set to full speed until the service is restarted' . ($error ? ': ' . $error['message'] : ''));
+    $msg = 'The service crashed, fans run at full speed until the watchdog restarts it (within a minute)' . ($error ? ': ' . $error['message'] : '.');
+    pfc_log($msg);
     $controller->failsafe();
+    pfc_notify('Service crashed', $msg);
 });
 
 if (function_exists('pcntl_async_signals')) {

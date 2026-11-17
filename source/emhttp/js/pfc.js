@@ -129,6 +129,7 @@
     renderFanTest();
     renderSources();
     renderDisks();
+    renderHardware();
     fillCfgInputs();
   }
 
@@ -139,8 +140,33 @@
     state.errors.forEach(e => items.push(['error', e]));
     (state.status && state.status.warnings || []).forEach(w => items.push(['error', w]));
     if (state.config.enabled && !state.running) items.push(['error', 'Fan control is enabled but the service is not running. The watchdog will try to restart it within a minute. Check the syslog.']);
-    if (!state.pwm.length) items.push(['error', 'No controllable fan outputs found. Make sure the sensor driver is loaded (e.g. by the Dynamix System Temperature plugin) and that "acpi_enforce_resources=lax" is set in syslinux.cfg.']);
+    const hw = state.hardware;
+    if (!hw.writable) items.push(['error', 'No controllable fan outputs found. ' + (hw.hint || '') + ' See the hardware check at the bottom of this page.']);
+    // Fans in a group that the service can't watch: no RPM sensor means no stall or moved-fan warnings
+    const grouped = new Set(state.config.groups.flatMap(g => g.fans));
+    const blind = state.pwm.filter(p => grouped.has(p.key) && !p.rpm_confirmed).map(p => p.label || p.key);
+    if (blind.length) items.push(['info', 'Without a confirmed RPM sensor, the plugin can\'t tell if these fans stop or were moved to another header: ' +
+      blind.join(', ') + '. Run Identify on them, or pick the sensor in the RPM sensor column ("none" if the fan has no sensor).']);
     $('#pfc-banners').html(items.map(i => '<div class="pfc-banner pfc-banner-' + i[0] + '">' + esc(i[1]) + '</div>').join(''));
+  }
+
+  function renderHardware() {
+    const hw = state.hardware;
+    const yes = t => '<span class="pfc-ok-text"><i class="fa fa-check"></i> ' + esc(t) + '</span>';
+    const no = t => '<span class="pfc-error-text"><i class="fa fa-times"></i> ' + esc(t) + '</span>';
+    const needLax = hw.conflicts.length && !hw.writable;
+    const muted = t => '<span class="pfc-muted">' + esc(t) + '</span>';
+    const rows = [
+      ['Fan controller driver', hw.drivers.length ? yes(hw.drivers.join(', ')) : no('none loaded')],
+      ['Fan outputs', hw.writable ? yes(hw.writable + ' found') : no(hw.pwm ? hw.pwm + ' found, none writable' : 'none found')],
+      ['ACPI resource conflicts in the kernel log', hw.conflicts.length
+        ? (needLax ? no('found') : muted(hw.lax ? 'found, handled by the lax option' : 'found, but fan outputs work')) +
+          '<div class="pfc-log">' + esc(hw.conflicts.join('\n')) + '</div>'
+        : yes('none')],
+      ['acpi_enforce_resources=lax', hw.lax ? yes('set') : (needLax ? no('not set, needed') : muted('not set, not needed'))],
+    ];
+    if (hw.hint) rows.push(['What to do', esc(hw.hint)]);
+    $('#pfc-hw-table tbody').html(rows.map(r => '<tr><td>' + esc(r[0]) + '</td><td>' + r[1] + '</td></tr>').join(''));
   }
 
   function renderStatus() {

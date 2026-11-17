@@ -3,7 +3,7 @@
  * PWM Fan Control - settings and fan groups (config.json on the flash drive).
  *
  * {
- *   "enabled": false, "interval": 5, "log_changes": true, "notify": true,
+ *   "enabled": false, "interval": 5, "log_changes": true, "notify": true, "drivers": "nct6775",
  *   "identify": {"low_pwm": 0, "seconds": 8},
  *   "array": {"include": {"Parity": true, ...}, "exclude": ["disk3"], "parity_full_speed": true},
  *   "groups": [{"id": "g1a2b", "name": "Array fans", "fans": ["<fan key>"], "ramp_down": 30,
@@ -18,6 +18,7 @@ function pfc_default_config(): array {
         'interval'    => 5,
         'log_changes' => true,
         'notify'      => true,
+        'drivers'     => '',      // kernel modules to load, e.g. "nct6775" or "it87 force_id=0x8628; nct6775"
         'identify'    => ['low_pwm' => 0, 'seconds' => 8],
         'array'       => [
             'include' => ['Parity' => true, 'Data' => true, 'Cache' => true, 'Unassigned' => true, 'Flash' => false],
@@ -47,6 +48,9 @@ function pfc_normalize_config(array $cfg): array {
         if (array_key_exists($k, $cfg)) $out[$k] = !empty($cfg[$k]);
     }
     if (isset($cfg['interval'])) $out['interval'] = (int)$cfg['interval'];
+    if (isset($cfg['drivers']) && is_string($cfg['drivers'])) {
+        $out['drivers'] = implode('; ', array_filter(array_map(fn($e) => preg_replace('/\s+/', ' ', trim($e)), explode(';', $cfg['drivers'])), 'strlen'));
+    }
     foreach (['low_pwm', 'seconds'] as $k) {
         if (isset($cfg['identify'][$k]) && is_numeric($cfg['identify'][$k])) $out['identify'][$k] = (int)$cfg['identify'][$k];
     }
@@ -88,6 +92,7 @@ function pfc_validate_config(array $cfg): array {
     if (!in_array($cfg['interval'], PFC_INTERVALS, true)) $errors[] = 'Check interval must be one of ' . implode(', ', PFC_INTERVALS) . ' seconds.';
     if ($cfg['identify']['low_pwm'] < 0 || $cfg['identify']['low_pwm'] > 255) $errors[] = 'Identify speed must be between 0% and 100%.';
     if ($cfg['identify']['seconds'] < 3 || $cfg['identify']['seconds'] > 30) $errors[] = 'Identify duration must be between 3 and 30 seconds.';
+    if (pfc_driver_list($cfg) === null) $errors[] = 'Drivers to load: use module names with optional options, separated by ";", e.g. "it87 force_id=0x8628; nct6775".';
 
     $owner = [];
     $ids = [];
@@ -130,6 +135,23 @@ function pfc_controlled_keys(array $cfg): array {
     $keys = [];
     foreach ($cfg['groups'] as $g) foreach ($g['fans'] as $f) $keys[$f] = $g['id'];
     return $keys;
+}
+
+/**
+ * The "drivers" setting as [module => [options]], or null when it is not valid.
+ * Only plain module names and name=value options are accepted, nothing else reaches modprobe.
+ */
+function pfc_driver_list(array $cfg): ?array {
+    $list = [];
+    foreach (explode(';', $cfg['drivers']) as $entry) {
+        $parts = preg_split('/\s+/', trim($entry), -1, PREG_SPLIT_NO_EMPTY);
+        if (!$parts) continue;
+        $module = array_shift($parts);
+        if (!preg_match('/^[a-z0-9_-]{1,64}$/i', $module)) return null;
+        foreach ($parts as $p) if (!preg_match('/^[a-z0-9_]{1,64}=[a-z0-9_.,:-]{1,64}$/i', $p)) return null;
+        $list[$module] = $parts;
+    }
+    return $list;
 }
 
 /** Whether any group follows a GPU (only then nvidia-smi has to run). */

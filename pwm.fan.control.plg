@@ -1,7 +1,7 @@
 <?xml version='1.0' standalone='yes'?>
 <!DOCTYPE PLUGIN [
 <!ENTITY name      "pwm.fan.control">
-<!ENTITY author    "Benjamin Krause">
+<!ENTITY author    "unknown">
 <!ENTITY version   "2026.11.17">
 <!ENTITY pluginURL "https://git.int.idmedia.no/idmedia/unraid/pwm-fan-control/raw/branch/main/pwm.fan.control.plg">
 <!ENTITY emhttp    "/usr/local/emhttp/plugins/&name;">
@@ -13,7 +13,12 @@
 - Speed test: measures the RPM of a fan from 100% down to 0%, shows where it stops and the speed it needs to start again
 - Warns when a group's min speed is below the speed one of its fans needs to start
 - Warns when a fan stops spinning (0 RPM) while it should run, and when another program changes a fan's speed
-- Unraid notifications for problems that last more than a minute, and when they are resolved
+- Problems are sent as Unraid alert notifications when they last more than a minute, a crash or watchdog restart right away, and a notice when resolved
+- Warns when a fan runs much faster or slower than its speed test measured, which usually means fans were moved to other headers
+- Missing fans say why: the chip is gone (driver not loaded, ACPI conflict) or only that output (hardware or BIOS changed)
+- Hardware check on the settings page: fan driver, fan outputs, ACPI resource conflicts and whether acpi_enforce_resources=lax is needed
+- New setting "Drivers to load": loads the fan controller driver (with options) at boot
+- Points out fans in a group without a paired RPM sensor, which can't be watched
 - A single failed temperature reading no longer sends fans to full speed; two in a row still do
 - An error in the service, or a crash, now runs the fans at full speed instead of leaving them at their last speed
 - Disk temperature sensors of the kernel (drivetemp) are no longer read, so disks can spin down
@@ -83,7 +88,8 @@ $pfc_v = @filemtime("/usr/local/emhttp$pfc_dir/js/pfc.js");
     Click <b>Identify</b> to slow a fan down and spin it up to full speed, then watch or listen to see which fan reacts.
     The RPM sensor that reacts is paired with the output automatically. Give each fan a name, then add it to a group above.
     <b>Speed test</b> measures the RPM from 100% down to 0%, and shows the speed a fan stops at and the speed it needs to
-    start again. With a paired RPM sensor, a fan that stops spinning while it should run is reported as a warning.
+    start again. With a paired RPM sensor, a fan that stops spinning while it should run is reported, and after a speed test also
+    a fan that runs much faster or slower than measured, which usually means fans were moved to other headers.
   </p>
   <div class="pfc-table-wrap">
     <table class="pfc-table" id="pfc-pwm-table">
@@ -159,7 +165,13 @@ $pfc_v = @filemtime("/usr/local/emhttp$pfc_dir/js/pfc.js");
     </dd></dl>
     <dl><dt>Send notifications:</dt><dd>
       <select data-cfg="notify" data-type="bool"><option value="true">Yes</option><option value="false">No</option></select>
-      <span class="pfc-muted">An Unraid notification when a problem lasts more than a minute (a fan stopped, a source can't be read, ...) and when it is resolved.</span>
+      <span class="pfc-muted">An Unraid alert when a problem lasts more than a minute (a fan stopped or was moved, a fan or source is missing,
+        the service failed, ...) and a notice when it is resolved.</span>
+    </dd></dl>
+    <dl><dt>Drivers to load:</dt><dd>
+      <input type="text" class="pfc-wide" data-cfg="drivers" maxlength="200" placeholder="e.g. nct6775">
+      <span class="pfc-muted">Fan controller drivers loaded at boot, before fan control starts. Separate several with ";", options are allowed
+        (e.g. "it87 force_id=0x8628"). Leave empty if another plugin (e.g. Dynamix System Temperature) loads the driver.</span>
     </dd></dl>
     <dl><dt>Identify: slow speed:</dt><dd><input type="number" min="0" max="100" class="pfc-narrow" data-cfg="identify.low_pwm" data-type="pct"> % <span class="pfc-muted">0% stops most fans.</span></dd></dl>
     <dl><dt>Identify: seconds per step:</dt><dd><input type="number" min="3" max="30" class="pfc-narrow" data-cfg="identify.seconds" data-type="int"></dd></dl>
@@ -168,6 +180,14 @@ $pfc_v = @filemtime("/usr/local/emhttp$pfc_dir/js/pfc.js");
       <button type="button" class="pfc-reset">Discard</button>
     </dd></dl>
   </form>
+
+  <!-- Hardware check -->
+  <div class="title"><span class="left"><i class="fa fa-stethoscope title"></i>Hardware check</span></div>
+  <p class="pfc-muted">What fan control needs from the system. <b>acpi_enforce_resources=lax</b> is only needed when the kernel log shows an
+    ACPI resource conflict for the fan chip: then the BIOS claims the chip and the driver can't load or offers no fan outputs.</p>
+  <div class="pfc-table-wrap">
+    <table class="pfc-table" id="pfc-hw-table"><tbody></tbody></table>
+  </div>
 </div>
 
 <script src="<?=$pfc_dir?>/js/pfc.js?v=<?=$pfc_v?>"></script>
@@ -254,6 +274,9 @@ Controls motherboard PWM fans based on temperatures: array disks, Nvidia GPUs, C
 #pfc .pfc-muted { opacity: .65; }
 #pfc .pfc-small { font-size: .85em; }
 #pfc .pfc-narrow { width: 70px; }
+#pfc .pfc-wide { width: 260px; max-width: 100%; }
+#pfc .pfc-ok-text { color: var(--pfc-ok); }
+#pfc .pfc-log { font-family: monospace; font-size: .85em; white-space: pre-wrap; word-break: break-all; }
 #pfc .pfc-error-text { color: var(--pfc-error); }
 
 #pfc .pfc-banner { margin: 10px 0; padding: 10px 14px; border-left: 4px solid var(--pfc-error); background: rgba(217, 83, 79, .1); }
@@ -398,6 +421,7 @@ case 'state':
         'running'    => pfc_daemon_pid() !== null,
         'status'     => pfc_live_status(),
         'pwm'        => pfc_fan_list($cfg, $fans, $hw),
+        'hardware'   => ($check = pfc_hardware_check($hw)) + ['hint' => pfc_hardware_hint($check)],
         'rpm'        => pfc_rpm_list($fans, $hw),
         'sources'    => array_values($sources),
         'disks'      => $disks,
@@ -516,9 +540,9 @@ default:
  *
  * Files
  *   config.php    settings and fan groups (config.json)
- *   hardware.php  hwmon scan, fan names (fans.json), handing fans back to the BIOS
+ *   hardware.php  hwmon scan, fan names (fans.json), handing fans back to the BIOS, drivers, hardware check
  *   sources.php   temperature sources and fan curves
- *   service.php   starting/stopping the service, fan tests in progress
+ *   service.php   starting/stopping the service (and loading drivers), fan tests in progress
  */
 
 const PFC_NAME       = 'pwm.fan.control';
@@ -533,6 +557,7 @@ const PFC_HISTORY    = PFC_RUN . '/history.json';
 const PFC_FANTEST    = PFC_RUN . '/fantest.json';
 const PFC_STOP_FLAG  = PFC_RUN . '/fantest.stop';
 const PFC_NV_CACHE   = PFC_RUN . '/nvidia.json';
+const PFC_HW_CACHE   = PFC_RUN . '/hardware.json';
 const PFC_PIDFILE    = '/var/run/' . PFC_NAME . '.pid';
 const PFC_RC         = PFC_PLUGIN . '/scripts/rc.pwmfancontrol';
 const PFC_HWMON      = '/sys/class/hwmon';
@@ -540,6 +565,10 @@ const PFC_NVIDIA_SMI = '/usr/bin/nvidia-smi';
 const PFC_EMHTTP     = '/var/local/emhttp';
 const PFC_NOTIFY     = '/usr/local/emhttp/webGui/scripts/notify';
 const PFC_UPDATE_CRON = '/usr/local/sbin/update_cron';
+const PFC_CMDLINE    = '/proc/cmdline';
+const PFC_MODULES    = '/sys/module';
+const PFC_DMESG      = 'dmesg';
+const PFC_MODPROBE   = 'modprobe';
 
 const PFC_OLD_BOOT   = '/boot/config/plugins/array.fan.control';
 const PFC_OLD_PLUGIN = '/usr/local/emhttp/plugins/array.fan.control';
@@ -593,10 +622,13 @@ function pfc_log(string $msg): void {
     exec('logger -t ' . escapeshellarg(PFC_NAME) . ' ' . escapeshellarg($msg));
 }
 
-/** Unraid notification. $level: normal|warning|alert */
-function pfc_notify(string $subject, string $description, string $level = 'warning'): void {
-    if (!is_executable(PFC_NOTIFY)) return;
-    exec(escapeshellarg(PFC_NOTIFY) . ' -e ' . escapeshellarg('PWM Fan Control') . ' -s ' . escapeshellarg($subject)
+/**
+ * Unraid notification, if enabled in the settings. $level: normal|warning|alert.
+ * Problems are sent as "alert" (shown in red), resolved problems as "normal".
+ */
+function pfc_notify(string $subject, string $description, string $level = 'alert'): void {
+    if (!is_executable(PFC_NOTIFY) || !pfc_load_config()['notify']) return;
+    exec(escapeshellarg(PFC_NOTIFY) . ' -e ' . escapeshellarg('PWM Fan Control') . ' -s ' . escapeshellarg("PWM Fan Control: $subject")
         . ' -d ' . escapeshellarg($description) . ' -i ' . escapeshellarg($level) . ' >/dev/null 2>&1');
 }
 
@@ -627,7 +659,7 @@ function pfc_clean_label($label): string {
  * PWM Fan Control - settings and fan groups (config.json on the flash drive).
  *
  * {
- *   "enabled": false, "interval": 5, "log_changes": true, "notify": true,
+ *   "enabled": false, "interval": 5, "log_changes": true, "notify": true, "drivers": "nct6775",
  *   "identify": {"low_pwm": 0, "seconds": 8},
  *   "array": {"include": {"Parity": true, ...}, "exclude": ["disk3"], "parity_full_speed": true},
  *   "groups": [{"id": "g1a2b", "name": "Array fans", "fans": ["<fan key>"], "ramp_down": 30,
@@ -642,6 +674,7 @@ function pfc_default_config(): array {
         'interval'    => 5,
         'log_changes' => true,
         'notify'      => true,
+        'drivers'     => '',      // kernel modules to load, e.g. "nct6775" or "it87 force_id=0x8628; nct6775"
         'identify'    => ['low_pwm' => 0, 'seconds' => 8],
         'array'       => [
             'include' => ['Parity' => true, 'Data' => true, 'Cache' => true, 'Unassigned' => true, 'Flash' => false],
@@ -671,6 +704,9 @@ function pfc_normalize_config(array $cfg): array {
         if (array_key_exists($k, $cfg)) $out[$k] = !empty($cfg[$k]);
     }
     if (isset($cfg['interval'])) $out['interval'] = (int)$cfg['interval'];
+    if (isset($cfg['drivers']) && is_string($cfg['drivers'])) {
+        $out['drivers'] = implode('; ', array_filter(array_map(fn($e) => preg_replace('/\s+/', ' ', trim($e)), explode(';', $cfg['drivers'])), 'strlen'));
+    }
     foreach (['low_pwm', 'seconds'] as $k) {
         if (isset($cfg['identify'][$k]) && is_numeric($cfg['identify'][$k])) $out['identify'][$k] = (int)$cfg['identify'][$k];
     }
@@ -712,6 +748,7 @@ function pfc_validate_config(array $cfg): array {
     if (!in_array($cfg['interval'], PFC_INTERVALS, true)) $errors[] = 'Check interval must be one of ' . implode(', ', PFC_INTERVALS) . ' seconds.';
     if ($cfg['identify']['low_pwm'] < 0 || $cfg['identify']['low_pwm'] > 255) $errors[] = 'Identify speed must be between 0% and 100%.';
     if ($cfg['identify']['seconds'] < 3 || $cfg['identify']['seconds'] > 30) $errors[] = 'Identify duration must be between 3 and 30 seconds.';
+    if (pfc_driver_list($cfg) === null) $errors[] = 'Drivers to load: use module names with optional options, separated by ";", e.g. "it87 force_id=0x8628; nct6775".';
 
     $owner = [];
     $ids = [];
@@ -754,6 +791,23 @@ function pfc_controlled_keys(array $cfg): array {
     $keys = [];
     foreach ($cfg['groups'] as $g) foreach ($g['fans'] as $f) $keys[$f] = $g['id'];
     return $keys;
+}
+
+/**
+ * The "drivers" setting as [module => [options]], or null when it is not valid.
+ * Only plain module names and name=value options are accepted, nothing else reaches modprobe.
+ */
+function pfc_driver_list(array $cfg): ?array {
+    $list = [];
+    foreach (explode(';', $cfg['drivers']) as $entry) {
+        $parts = preg_split('/\s+/', trim($entry), -1, PREG_SPLIT_NO_EMPTY);
+        if (!$parts) continue;
+        $module = array_shift($parts);
+        if (!preg_match('/^[a-z0-9_-]{1,64}$/i', $module)) return null;
+        foreach ($parts as $p) if (!preg_match('/^[a-z0-9_]{1,64}=[a-z0-9_.,:-]{1,64}$/i', $p)) return null;
+        $list[$module] = $parts;
+    }
+    return $list;
 }
 
 /** Whether any group follows a GPU (only then nvidia-smi has to run). */
@@ -823,15 +877,23 @@ function pfc_migrate_old(): bool {
  *   - A crash of the service leaves the fans at full speed until the watchdog restarts it.
  *   - Only a deliberate stop (disabled, removed, signal) hands the fans back to the BIOS.
  *
- * It also watches for problems and reports them as warnings (status page, syslog, notifications):
+ * It also watches for problems and reports them as warnings (status page, syslog, Unraid alert
+ * notifications):
  *   - a fan that stays at 0 RPM while it should spin (needs a confirmed RPM sensor),
+ *   - a fan that runs clearly faster or slower than its speed test measured at the same speed, which
+ *     usually means a different fan is now connected to that header (fans were moved),
  *   - a fan whose speed or mode is changed by something else (another fan control),
- *   - fans that can't be found or written.
+ *   - fans that can't be found or written (driver not loaded, hardware changed),
+ *   - temperature sources that can't be read, and errors of the service itself.
  */
 final class PfcController {
     private const SOURCE_RETRIES = 1;     // failed reads of a source tolerated before full speed
     private const STALL_SECONDS  = 20;    // 0 RPM for this long while it should spin = stalled
     private const STALL_MIN_PWM  = 77;    // 30%: below this, without a speed test, 0 RPM may be normal
+    private const SETTLE_SECONDS = 15;    // time a fan needs to reach its speed after a change
+    private const MISMATCH_SECONDS = 60;  // RPM far from the speed test for this long = different fan
+    private const MISMATCH_LOW   = 0.65;  // RPM below 65% ...
+    private const MISMATCH_HIGH  = 1.5;   // ... or above 150% of the speed test = mismatch
     private const CONFLICT_TICKS = 2;     // checks in a row a fan has to be changed by someone else
     private const NOTIFY_AFTER   = 60;    // seconds a warning has to persist before a notification
     private const RESOLVE_TICKS  = 3;     // checks in a row a warning has to be gone to count as resolved
@@ -849,11 +911,14 @@ final class PfcController {
     private array $written = [];      // fan key => [pwm we set, enable we set]
     private array $conflicts = [];    // fan key => checks in a row changed by someone else
     private array $zeroSince = [];    // fan key => time it was first seen at 0 RPM while it should spin
+    private array $setAt = [];        // fan key => [time, pwm] of the last real speed change
+    private array $mismatchSince = []; // fan key => time its RPM was first seen far from the speed test
+    private ?array $hwCheck = null;   // pfc_hardware_check() while fans are missing, refreshed every minute
+    private array $lastWarnings = []; // warnings of the last good check
     private array $warnSince = [];    // warning => first seen
     private array $notified = [];     // warning => true once a notification was sent
     private array $warnMissing = [];  // warning => checks in a row it was gone
     private int $lastHistory = 0;
-    private bool $failsafe = false;   // fans were set to full speed after an error in the loop
 
     public bool $running = true;
 
@@ -864,7 +929,6 @@ final class PfcController {
             $start = microtime(true);
             try {
                 if (!$this->tick()) break;
-                $this->failsafe = false;
             } catch (Throwable $e) {
                 $this->onError($e);
             }
@@ -898,7 +962,8 @@ final class PfcController {
         }
         if ($fansChanged) $this->saveFans();
 
-        $this->report($warnings, $now);
+        $this->lastWarnings = array_values(array_unique($warnings));
+        $this->report($this->lastWarnings, $now);
         $used = $this->usedSources($sources);
         pfc_write_json(PFC_STATUS, [
             'time' => $now, 'pid' => getmypid(), 'interval' => $cfg['interval'],
@@ -944,7 +1009,7 @@ final class PfcController {
                     $hw = pfc_scan_hwmon();
                     foreach (array_keys($gone) as $key) {
                         pfc_release_fan($fans, $key, $hw);
-                        unset($this->written[$key], $this->conflicts[$key], $this->zeroSince[$key]);
+                        unset($this->written[$key], $this->conflicts[$key], $this->zeroSince[$key], $this->setAt[$key], $this->mismatchSince[$key]);
                     }
                     pfc_save_fans($fans);
                     $this->fansHash = null;
@@ -1024,20 +1089,26 @@ final class PfcController {
         foreach ($g['fans'] as $key) {
             $name = $this->fanName($key, $hw);
             $fan = $hw['pwm'][$key] ?? null;
-            if (!$fan) { $warnings[] = "Fan \"$name\" in \"{$g['name']}\" was not found. Is its sensor driver loaded?"; continue; }
+            if (!$fan) { $warnings[] = $this->missingFan($key, $name, $g['name'], $hw, $now); continue; }
             if (!$fan['writable']) { $warnings[] = "Fan \"$name\" can't be controlled (not writable)."; continue; }
             $count++;
             if ($test && ($test['key'] ?? '') === $key) {
                 // Being tested from the web UI: leave it alone, and don't mistake the test for a conflict
-                unset($this->written[$key], $this->zeroSince[$key]);
+                unset($this->written[$key], $this->zeroSince[$key], $this->setAt[$key], $this->mismatchSince[$key]);
                 continue;
             }
             $this->checkConflict($fan, $name, $warnings);
             $error = pfc_drive_fan($this->fans, $fan, $pwm, $fansChanged);
             if ($error) $warnings[] = "Fan \"$name\": $error.";
             $this->written[$key] = [$pwm, 1];
-            $this->checkStall($fan, $name, $pwm, $hw, $now, $warnings);
+            // Small adjustments don't restart the settle time, the mismatch check is tolerant enough
+            if (!isset($this->setAt[$key]) || abs($this->setAt[$key][1] - $pwm) > 13) $this->setAt[$key] = [$now, $pwm];
+            $rpmKey = pfc_confirmed_rpm($this->fans, $key);
+            $rpm = $rpmKey ? ($hw['rpm'][$rpmKey]['rpm'] ?? null) : null;
+            $this->checkStall($key, $name, $pwm, $rpmKey, $rpm, $now, $warnings);
+            $this->checkMismatch($key, $name, $pwm, $rpmKey, $rpm, $now, $warnings);
         }
+        if ($count) $this->hwCheck = null;
 
         // Log meaningful changes only (>= 5%, or entering/leaving full speed)
         $prev = $this->logged[$gid] ?? null;
@@ -1075,14 +1146,26 @@ final class PfcController {
         }
     }
 
+    /**
+     * A fan in a group that isn't there. Says why, as far as we can tell: the chip is missing (driver not
+     * loaded, see the hardware check) or the chip is there but not this output (hardware changed).
+     */
+    private function missingFan(string $key, string $name, string $group, array $hw, int $now): string {
+        $chip = strstr($key, '@', true) ?: strstr($key, '/', true);
+        $msg = "Fan \"$name\" in \"$group\" was not found, it is not controlled.";
+        foreach ($hw['pwm'] as $p) {
+            if ($p['chip'] === $chip) return "$msg The $chip chip is there, but not this output: was the hardware or BIOS changed? Add the fan to the group again.";
+        }
+        if (!$this->hwCheck || $now - $this->hwCheck['time'] >= 60) $this->hwCheck = ['time' => $now] + pfc_hardware_check($hw);
+        $hint = pfc_hardware_hint($this->hwCheck, true) ?? "Is the driver for the $chip chip loaded?";
+        return "$msg $hint";
+    }
+
     /** A fan that reports 0 RPM for a while although it should spin. Needs a confirmed RPM sensor. */
-    private function checkStall(array $fan, string $name, int $pwm, array $hw, int $now, array &$warnings): void {
-        $key = $fan['key'];
-        $rpmKey = pfc_confirmed_rpm($this->fans, $key);
-        $rpm = $rpmKey ? ($hw['rpm'][$rpmKey]['rpm'] ?? null) : null;
+    private function checkStall(string $key, string $name, int $pwm, ?string $rpmKey, ?int $rpm, int $now, array &$warnings): void {
         // With a speed test we know where the fan starts, otherwise assume it spins from 30%
-        $t = $this->fans['pwm'][$key]['test'] ?? null;
-        $spinsFrom = is_array($t) && !empty($t['done']) ? ($t['start_pwm'] ?? $t['min_pwm'] ?? 0) : self::STALL_MIN_PWM;
+        $t = $this->speedTest($key, $rpmKey);
+        $spinsFrom = $t ? ($t['start_pwm'] ?? $t['min_pwm'] ?? 0) : self::STALL_MIN_PWM;
         if ($rpm === null && $rpmKey && isset($this->zeroSince[$key])) return; // unreadable for a moment: keep counting
         if ($rpm !== 0 || $pwm < max(1, $spinsFrom)) {
             unset($this->zeroSince[$key]);
@@ -1090,7 +1173,37 @@ final class PfcController {
         }
         $this->zeroSince[$key] = $this->zeroSince[$key] ?? $now;
         if ($now - $this->zeroSince[$key] >= self::STALL_SECONDS) {
-            $warnings[] = "Fan \"$name\" is not spinning (0 RPM). Check the fan and its cable.";
+            $warnings[] = "Fan \"$name\" is not spinning (0 RPM). Check the fan and its cable, and whether it was moved to another header.";
+        }
+    }
+
+    /** The finished speed test of a fan, if it was measured with its current RPM sensor. */
+    private function speedTest(string $key, ?string $rpmKey): ?array {
+        $t = $this->fans['pwm'][$key]['test'] ?? null;
+        return is_array($t) && !empty($t['done']) && ($t['rpm_key'] ?? null) === $rpmKey ? $t : null;
+    }
+
+    /**
+     * A fan that runs far faster or slower than its speed test measured at the same speed. Fan names and
+     * groups belong to the header, so after moving fans to other headers the wrong fans would follow the
+     * wrong temperatures without anything failing. Different fan models have quite different speeds, so
+     * this catches most mix-ups. Needs a confirmed RPM sensor and a speed test.
+     */
+    private function checkMismatch(string $key, string $name, int $pwm, ?string $rpmKey, ?int $rpm, int $now, array &$warnings): void {
+        $t = $this->speedTest($key, $rpmKey);
+        $expected = $t ? pfc_expected_rpm($t['points'] ?? [], $pwm) : null;
+        $settled = $now - ($this->setAt[$key][0] ?? $now) >= self::SETTLE_SECONDS;
+        if ($rpm === null && isset($this->mismatchSince[$key])) return; // unreadable for a moment: keep counting
+        if (!$settled || !$rpm || $expected === null || $expected < 300
+            || ($rpm >= $expected * self::MISMATCH_LOW && $rpm <= $expected * self::MISMATCH_HIGH)) {
+            unset($this->mismatchSince[$key]);
+            return;
+        }
+        $this->mismatchSince[$key] = $this->mismatchSince[$key] ?? $now;
+        if ($now - $this->mismatchSince[$key] >= self::MISMATCH_SECONDS) {
+            // Keep the text stable (no live numbers), warnings are tracked by their text
+            $warnings[] = "Fan \"$name\" runs much " . ($rpm > $expected ? 'faster' : 'slower') . ' than in its speed test. '
+                . 'Was a fan moved to another header? Check with Identify and run the speed test again.';
         }
     }
 
@@ -1110,13 +1223,13 @@ final class PfcController {
             }
             if (empty($this->notified[$w]) && $now - $this->warnSince[$w] >= self::NOTIFY_AFTER) {
                 $this->notified[$w] = true;
-                if ($this->cfg['notify']) pfc_notify('Fan problem', $w, 'warning');
+                pfc_notify('Fan problem', $w, 'alert');
             }
         }
         foreach (array_diff(array_keys($this->warnSince), $current) as $w) {
             $this->warnMissing[$w] = ($this->warnMissing[$w] ?? 0) + 1;
             if ($this->warnMissing[$w] < self::RESOLVE_TICKS) continue;
-            if (!empty($this->notified[$w]) && $this->cfg['notify']) pfc_notify('Fan problem resolved', $w, 'normal');
+            if (!empty($this->notified[$w])) pfc_notify('Problem resolved', $w, 'normal');
             pfc_log("Resolved: $w");
             unset($this->warnSince[$w], $this->notified[$w], $this->warnMissing[$w]);
         }
@@ -1133,15 +1246,19 @@ final class PfcController {
         pfc_write_json(PFC_HISTORY, $history);
     }
 
-    /** An error in the loop: run at full speed, tell the user, try again next check. */
+    /**
+     * An error in the loop: run at full speed, tell the user, try again next check. The warnings of the
+     * last good check stay active, so they aren't reported as resolved while the error lasts.
+     */
     private function onError(Throwable $e): void {
+        $now = time();
         $msg = 'Internal error, fans run at full speed: ' . $e->getMessage() . ' (' . basename($e->getFile()) . ':' . $e->getLine() . ')';
-        if (!$this->failsafe) pfc_log($msg);
-        $this->failsafe = true;
         $this->written = [];
         try { $this->failsafe(); } catch (Throwable $ignored) {}
-        pfc_write_json(PFC_STATUS, ['time' => time(), 'pid' => getmypid(), 'interval' => $this->cfg['interval'] ?? 5,
-            'groups' => [], 'sources' => [], 'warnings' => [$msg]]);
+        $warnings = array_merge($this->lastWarnings, [$msg]);
+        try { $this->report($warnings, $now); } catch (Throwable $ignored) {}
+        pfc_write_json(PFC_STATUS, ['time' => $now, 'pid' => getmypid(), 'interval' => $this->cfg['interval'] ?? 5,
+            'groups' => [], 'sources' => [], 'warnings' => $warnings]);
     }
 }
 ]]></INLINE>
@@ -1150,7 +1267,8 @@ final class PfcController {
 <FILE Name="&emhttp;/include/hardware.php">
 <INLINE><![CDATA[<?php
 /*
- * PWM Fan Control - fans and kernel sensors (/sys/class/hwmon) and fan names (fans.json).
+ * PWM Fan Control - fans and kernel sensors (/sys/class/hwmon), fan names (fans.json), fan drivers and
+ * the hardware check.
  *
  * fans.json on the flash drive:
  * {
@@ -1236,6 +1354,80 @@ function pfc_scan_hwmon(): array {
     return $result;
 }
 
+/* ------------------------------------------------------- drivers and setup */
+
+// Drivers of motherboard/controller chips that offer PWM fan outputs
+const PFC_FAN_DRIVERS = ['nct6775', 'nct6683', 'nct6687', 'it87', 'f71882fg', 'f71805f', 'w83627ehf', 'w83627hf', 'w83795',
+    'sch5627', 'sch5636', 'asus_ec_sensors', 'dell_smm_hwmon', 'thinkpad_acpi', 'applesmc', 'pwm_fan', 'emc2305', 'max6650'];
+
+/** Loads the kernel modules from the "drivers" setting that aren't loaded yet. Returns the errors. */
+function pfc_load_drivers(array $cfg): array {
+    $errors = [];
+    foreach (pfc_driver_list($cfg) ?? [] as $module => $options) {
+        if (is_dir(PFC_MODULES . '/' . str_replace('-', '_', $module))) continue;
+        exec(PFC_MODPROBE . ' ' . implode(' ', array_map('escapeshellarg', array_merge([$module], $options))) . ' 2>&1', $out, $rc);
+        if ($rc !== 0) {
+            $errors[] = "Could not load driver $module" . ($out ? ': ' . trim(implode(' ', $out)) : '');
+            pfc_log(end($errors));
+        } else {
+            pfc_log("Loaded driver $module");
+        }
+        $out = [];
+    }
+    if (!$errors) @unlink(PFC_HW_CACHE);
+    return $errors;
+}
+
+/**
+ * Checks what is needed to control fans, for the hardware check in the web UI and for warnings:
+ *   drivers      loaded fan controller drivers
+ *   lax          acpi_enforce_resources=lax is on the kernel command line
+ *   conflicts    kernel log lines about ACPI resource conflicts (the reason "lax" is needed)
+ *   pwm/writable number of PWM outputs found / writable
+ * The kernel log part is cached for a minute, it can be large.
+ */
+function pfc_hardware_check(?array $hw = null): array {
+    $hw = $hw ?? pfc_scan_hwmon();
+    $cache = pfc_read_json(PFC_HW_CACHE);
+    if (!is_array($cache) || time() - ($cache['time'] ?? 0) > 60) {
+        exec(PFC_DMESG . ' 2>/dev/null', $log);
+        $conflicts = [];
+        foreach ($log as $line) {
+            if (preg_match('/conflicts with OpRegion|resource conflict|acpi_enforce_resources/i', $line)) $conflicts[] = trim($line);
+        }
+        $cache = ['time' => time(), 'conflicts' => array_slice(array_values(array_unique($conflicts)), -6)];
+        pfc_write_json(PFC_HW_CACHE, $cache);
+    }
+    return [
+        'drivers'   => array_values(array_filter(PFC_FAN_DRIVERS, fn($m) => is_dir(PFC_MODULES . "/$m"))),
+        'lax'       => (bool)preg_match('/(^|\s)acpi_enforce_resources=lax(\s|$)/', (string)@file_get_contents(PFC_CMDLINE)),
+        'conflicts' => $cache['conflicts'],
+        'pwm'       => count($hw['pwm']),
+        'writable'  => count(array_filter($hw['pwm'], fn($p) => $p['writable'])),
+    ];
+}
+
+/**
+ * What to do when fans can't be found or controlled, based on pfc_hardware_check(). Null if all looks fine.
+ * $missing: a fan in a group is missing although other outputs work (its chip may be the one in conflict).
+ */
+function pfc_hardware_hint(array $check, bool $missing = false): ?string {
+    if ($check['conflicts'] && !$check['lax'] && ($missing || !$check['writable'])) {
+        return 'The kernel log shows an ACPI resource conflict, which keeps the fan driver from using the chip. '
+            . 'Add acpi_enforce_resources=lax to the boot options (Main > Flash > Syslinux Configuration, on the "append" line) and reboot.';
+    }
+    if (!$check['drivers']) {
+        return 'No fan controller driver is loaded. Enter it under "Drivers to load" in the settings (e.g. nct6775 or it87), '
+            . 'or let the Dynamix System Temperature plugin load it.';
+    }
+    if (!$check['pwm']) {
+        return 'The driver ' . implode(', ', $check['drivers']) . ' is loaded but offers no fan outputs. '
+            . ($check['lax'] ? 'Your board may need a different driver.' : 'Your board may need acpi_enforce_resources=lax in the boot options, or a different driver.');
+    }
+    if (!$check['writable']) return 'Fan outputs were found but none can be written. The plugin has to run as root.';
+    return null;
+}
+
 function pfc_enable_mode_name($enable): string {
     $names = [0 => 'Full speed', 1 => 'Manual', 2 => 'Thermal cruise', 3 => 'Fan speed cruise', 4 => 'Smart Fan III', 5 => 'Smart Fan IV'];
     return $enable === null ? 'n/a' : ($names[$enable] ?? "Mode $enable");
@@ -1245,6 +1437,25 @@ function pfc_enable_mode_name($enable): string {
 function pfc_confirmed_rpm(array $fans, string $key): ?string {
     $rpm = $fans['pwm'][$key]['rpm'] ?? null;
     return is_string($rpm) && $rpm !== 'none' ? $rpm : null;
+}
+
+/**
+ * The RPM a speed test measured at $pwm, interpolated between its steps. Null below the lowest
+ * speed the fan kept running at, where it may be stopped.
+ */
+function pfc_expected_rpm(array $points, int $pwm): ?float {
+    $running = array_values(array_filter($points, fn($p) => is_array($p) && (int)($p[1] ?? 0) > 0));
+    if (!$running) return null;
+    usort($running, fn($a, $b) => $a[0] <=> $b[0]);
+    if ($pwm < $running[0][0]) return null;
+    $prev = $running[0];
+    foreach ($running as $p) {
+        if ($pwm <= $p[0]) {
+            return $p[0] === $prev[0] ? (float)$p[1] : $prev[1] + ($p[1] - $prev[1]) * ($pwm - $prev[0]) / ($p[0] - $prev[0]);
+        }
+        $prev = $p;
+    }
+    return (float)$prev[1];
 }
 
 /**
@@ -1340,8 +1551,12 @@ function pfc_daemon_pid(): ?int {
     return pfc_pid_alive($pid) ? $pid : null;
 }
 
-/** Starts or stops the service and its watchdog cron job to match the config. */
+/**
+ * Loads the configured drivers, then starts or stops the service and its watchdog cron job to match
+ * the config. Runs at boot (install.sh) and whenever the settings are saved.
+ */
 function pfc_apply_service(array $cfg): void {
+    pfc_load_drivers($cfg);
     if ($cfg['enabled']) {
         pfc_write_atomic(PFC_CRON, "# PWM Fan Control watchdog (generated, do not edit)\n* * * * * " . PFC_RC . " watchdog >/dev/null 2>&1\n\n", true);
     } else {
@@ -1710,6 +1925,7 @@ function pfc_group_demand(array $group, array $sources): array {
     renderFanTest();
     renderSources();
     renderDisks();
+    renderHardware();
     fillCfgInputs();
   }
 
@@ -1720,8 +1936,33 @@ function pfc_group_demand(array $group, array $sources): array {
     state.errors.forEach(e => items.push(['error', e]));
     (state.status && state.status.warnings || []).forEach(w => items.push(['error', w]));
     if (state.config.enabled && !state.running) items.push(['error', 'Fan control is enabled but the service is not running. The watchdog will try to restart it within a minute. Check the syslog.']);
-    if (!state.pwm.length) items.push(['error', 'No controllable fan outputs found. Make sure the sensor driver is loaded (e.g. by the Dynamix System Temperature plugin) and that "acpi_enforce_resources=lax" is set in syslinux.cfg.']);
+    const hw = state.hardware;
+    if (!hw.writable) items.push(['error', 'No controllable fan outputs found. ' + (hw.hint || '') + ' See the hardware check at the bottom of this page.']);
+    // Fans in a group that the service can't watch: no RPM sensor means no stall or moved-fan warnings
+    const grouped = new Set(state.config.groups.flatMap(g => g.fans));
+    const blind = state.pwm.filter(p => grouped.has(p.key) && !p.rpm_confirmed).map(p => p.label || p.key);
+    if (blind.length) items.push(['info', 'Without a confirmed RPM sensor, the plugin can\'t tell if these fans stop or were moved to another header: ' +
+      blind.join(', ') + '. Run Identify on them, or pick the sensor in the RPM sensor column ("none" if the fan has no sensor).']);
     $('#pfc-banners').html(items.map(i => '<div class="pfc-banner pfc-banner-' + i[0] + '">' + esc(i[1]) + '</div>').join(''));
+  }
+
+  function renderHardware() {
+    const hw = state.hardware;
+    const yes = t => '<span class="pfc-ok-text"><i class="fa fa-check"></i> ' + esc(t) + '</span>';
+    const no = t => '<span class="pfc-error-text"><i class="fa fa-times"></i> ' + esc(t) + '</span>';
+    const needLax = hw.conflicts.length && !hw.writable;
+    const muted = t => '<span class="pfc-muted">' + esc(t) + '</span>';
+    const rows = [
+      ['Fan controller driver', hw.drivers.length ? yes(hw.drivers.join(', ')) : no('none loaded')],
+      ['Fan outputs', hw.writable ? yes(hw.writable + ' found') : no(hw.pwm ? hw.pwm + ' found, none writable' : 'none found')],
+      ['ACPI resource conflicts in the kernel log', hw.conflicts.length
+        ? (needLax ? no('found') : muted(hw.lax ? 'found, handled by the lax option' : 'found, but fan outputs work')) +
+          '<div class="pfc-log">' + esc(hw.conflicts.join('\n')) + '</div>'
+        : yes('none')],
+      ['acpi_enforce_resources=lax', hw.lax ? yes('set') : (needLax ? no('not set, needed') : muted('not set, not needed'))],
+    ];
+    if (hw.hint) rows.push(['What to do', esc(hw.hint)]);
+    $('#pfc-hw-table tbody').html(rows.map(r => '<tr><td>' + esc(r[0]) + '</td><td>' + r[1] + '</td></tr>').join(''));
   }
 
   function renderStatus() {
@@ -2321,8 +2562,10 @@ $finished = false;
 register_shutdown_function(function () use ($controller, &$finished) {
     if ($finished) return;
     $error = error_get_last();
-    pfc_log('Crashed, fans set to full speed until the service is restarted' . ($error ? ': ' . $error['message'] : ''));
+    $msg = 'The service crashed, fans run at full speed until the watchdog restarts it (within a minute)' . ($error ? ': ' . $error['message'] : '.');
+    pfc_log($msg);
     $controller->failsafe();
+    pfc_notify('Service crashed', $msg);
 });
 
 if (function_exists('pcntl_async_signals')) {
@@ -2538,6 +2781,14 @@ running() {
     [[ -f "$PIDFILE" ]] && kill -0 "$(cat "$PIDFILE" 2>/dev/null)" 2>/dev/null
 }
 
+# Unraid alert notification (if enabled), at most once an hour so a service that keeps failing doesn't flood
+alert() {
+    local flag="/tmp/$NAME/watchdog.notified"
+    [[ -f "$flag" ]] && (( $(date +%s) - $(stat -c %Y "$flag") < 3600 )) && return
+    mkdir -p "/tmp/$NAME" && touch "$flag"
+    "$PHP" -r 'require $argv[1]; pfc_notify("Service restarted", $argv[2]);' "$PLUGIN/include/common.php" "$1" >/dev/null 2>&1
+}
+
 start() {
     if running; then
         echo "PWM Fan Control is already running"
@@ -2578,6 +2829,7 @@ case "$1" in
         # Called by cron every minute while fan control is enabled
         if ! running; then
             logger -t "$NAME" "Service was not running, restarting it"
+            alert "The fan control service was not running and has been restarted. Check the syslog for the reason."
             start >/dev/null
         else
             # The service writes its status on every check (at most every 30s). If it hasn't
@@ -2586,6 +2838,7 @@ case "$1" in
             last=$(stat -c %Y "$STATUS" 2>/dev/null || stat -c %Y "$PIDFILE" 2>/dev/null || echo "$now")
             if (( now - last > 90 )); then
                 logger -t "$NAME" "Service stopped responding, restarting it"
+                alert "The fan control service stopped responding and has been restarted. Fans ran at their last speed in the meantime. Check the syslog for the reason."
                 stop >/dev/null
                 start >/dev/null
             fi

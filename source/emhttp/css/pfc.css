@@ -4,6 +4,9 @@
 #pfc .pfc-muted { opacity: .65; }
 #pfc .pfc-small { font-size: .85em; }
 #pfc .pfc-narrow { width: 70px; }
+#pfc .pfc-wide { width: 260px; max-width: 100%; }
+#pfc .pfc-ok-text { color: var(--pfc-ok); }
+#pfc .pfc-log { font-family: monospace; font-size: .85em; white-space: pre-wrap; word-break: break-all; }
 #pfc .pfc-error-text { color: var(--pfc-error); }
 
 #pfc .pfc-banner { margin: 10px 0; padding: 10px 14px; border-left: 4px solid var(--pfc-error); background: rgba(217, 83, 79, .1); }

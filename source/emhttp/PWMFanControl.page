@@ -41,7 +41,8 @@ $pfc_v = @filemtime("/usr/local/emhttp$pfc_dir/js/pfc.js");
     Click <b>Identify</b> to slow a fan down and spin it up to full speed, then watch or listen to see which fan reacts.
     The RPM sensor that reacts is paired with the output automatically. Give each fan a name, then add it to a group above.
     <b>Speed test</b> measures the RPM from 100% down to 0%, and shows the speed a fan stops at and the speed it needs to
-    start again. With a paired RPM sensor, a fan that stops spinning while it should run is reported as a warning.
+    start again. With a paired RPM sensor, a fan that stops spinning while it should run is reported, and after a speed test also
+    a fan that runs much faster or slower than measured, which usually means fans were moved to other headers.
   </p>
   <div class="pfc-table-wrap">
     <table class="pfc-table" id="pfc-pwm-table">
@@ -117,7 +118,13 @@ $pfc_v = @filemtime("/usr/local/emhttp$pfc_dir/js/pfc.js");
     </dd></dl>
     <dl><dt>Send notifications:</dt><dd>
       <select data-cfg="notify" data-type="bool"><option value="true">Yes</option><option value="false">No</option></select>
-      <span class="pfc-muted">An Unraid notification when a problem lasts more than a minute (a fan stopped, a source can't be read, ...) and when it is resolved.</span>
+      <span class="pfc-muted">An Unraid alert when a problem lasts more than a minute (a fan stopped or was moved, a fan or source is missing,
+        the service failed, ...) and a notice when it is resolved.</span>
+    </dd></dl>
+    <dl><dt>Drivers to load:</dt><dd>
+      <input type="text" class="pfc-wide" data-cfg="drivers" maxlength="200" placeholder="e.g. nct6775">
+      <span class="pfc-muted">Fan controller drivers loaded at boot, before fan control starts. Separate several with ";", options are allowed
+        (e.g. "it87 force_id=0x8628"). Leave empty if another plugin (e.g. Dynamix System Temperature) loads the driver.</span>
     </dd></dl>
     <dl><dt>Identify: slow speed:</dt><dd><input type="number" min="0" max="100" class="pfc-narrow" data-cfg="identify.low_pwm" data-type="pct"> % <span class="pfc-muted">0% stops most fans.</span></dd></dl>
     <dl><dt>Identify: seconds per step:</dt><dd><input type="number" min="3" max="30" class="pfc-narrow" data-cfg="identify.seconds" data-type="int"></dd></dl>
@@ -126,6 +133,14 @@ $pfc_v = @filemtime("/usr/local/emhttp$pfc_dir/js/pfc.js");
       <button type="button" class="pfc-reset">Discard</button>
     </dd></dl>
   </form>
+
+  <!-- Hardware check -->
+  <div class="title"><span class="left"><i class="fa fa-stethoscope title"></i>Hardware check</span></div>
+  <p class="pfc-muted">What fan control needs from the system. <b>acpi_enforce_resources=lax</b> is only needed when the kernel log shows an
+    ACPI resource conflict for the fan chip: then the BIOS claims the chip and the driver can't load or offers no fan outputs.</p>
+  <div class="pfc-table-wrap">
+    <table class="pfc-table" id="pfc-hw-table"><tbody></tbody></table>
+  </div>
 </div>
 
 <script src="<?=$pfc_dir?>/js/pfc.js?v=<?=$pfc_v?>"></script>

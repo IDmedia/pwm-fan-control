@@ -14,9 +14,9 @@
  *
  * Files
  *   config.php    settings and fan groups (config.json)
- *   hardware.php  hwmon scan, fan names (fans.json), handing fans back to the BIOS
+ *   hardware.php  hwmon scan, fan names (fans.json), handing fans back to the BIOS, drivers, hardware check
  *   sources.php   temperature sources and fan curves
- *   service.php   starting/stopping the service, fan tests in progress
+ *   service.php   starting/stopping the service (and loading drivers), fan tests in progress
  */
 
 const PFC_NAME       = 'pwm.fan.control';
@@ -31,6 +31,7 @@ const PFC_HISTORY    = PFC_RUN . '/history.json';
 const PFC_FANTEST    = PFC_RUN . '/fantest.json';
 const PFC_STOP_FLAG  = PFC_RUN . '/fantest.stop';
 const PFC_NV_CACHE   = PFC_RUN . '/nvidia.json';
+const PFC_HW_CACHE   = PFC_RUN . '/hardware.json';
 const PFC_PIDFILE    = '/var/run/' . PFC_NAME . '.pid';
 const PFC_RC         = PFC_PLUGIN . '/scripts/rc.pwmfancontrol';
 const PFC_HWMON      = '/sys/class/hwmon';
@@ -38,6 +39,10 @@ const PFC_NVIDIA_SMI = '/usr/bin/nvidia-smi';
 const PFC_EMHTTP     = '/var/local/emhttp';
 const PFC_NOTIFY     = '/usr/local/emhttp/webGui/scripts/notify';
 const PFC_UPDATE_CRON = '/usr/local/sbin/update_cron';
+const PFC_CMDLINE    = '/proc/cmdline';
+const PFC_MODULES    = '/sys/module';
+const PFC_DMESG      = 'dmesg';
+const PFC_MODPROBE   = 'modprobe';
 
 const PFC_OLD_BOOT   = '/boot/config/plugins/array.fan.control';
 const PFC_OLD_PLUGIN = '/usr/local/emhttp/plugins/array.fan.control';
@@ -91,10 +96,13 @@ function pfc_log(string $msg): void {
     exec('logger -t ' . escapeshellarg(PFC_NAME) . ' ' . escapeshellarg($msg));
 }
 
-/** Unraid notification. $level: normal|warning|alert */
-function pfc_notify(string $subject, string $description, string $level = 'warning'): void {
-    if (!is_executable(PFC_NOTIFY)) return;
-    exec(escapeshellarg(PFC_NOTIFY) . ' -e ' . escapeshellarg('PWM Fan Control') . ' -s ' . escapeshellarg($subject)
+/**
+ * Unraid notification, if enabled in the settings. $level: normal|warning|alert.
+ * Problems are sent as "alert" (shown in red), resolved problems as "normal".
+ */
+function pfc_notify(string $subject, string $description, string $level = 'alert'): void {
+    if (!is_executable(PFC_NOTIFY) || !pfc_load_config()['notify']) return;
+    exec(escapeshellarg(PFC_NOTIFY) . ' -e ' . escapeshellarg('PWM Fan Control') . ' -s ' . escapeshellarg("PWM Fan Control: $subject")
         . ' -d ' . escapeshellarg($description) . ' -i ' . escapeshellarg($level) . ' >/dev/null 2>&1');
 }
 

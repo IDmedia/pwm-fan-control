@@ -57,6 +57,7 @@ case 'state':
         'running'    => pfc_daemon_pid() !== null,
         'status'     => pfc_live_status(),
         'pwm'        => pfc_fan_list($cfg, $fans, $hw),
+        'hardware'   => ($check = pfc_hardware_check($hw)) + ['hint' => pfc_hardware_hint($check)],
         'rpm'        => pfc_rpm_list($fans, $hw),
         'sources'    => array_values($sources),
         'disks'      => $disks,

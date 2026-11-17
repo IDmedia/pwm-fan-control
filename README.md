@@ -18,10 +18,14 @@ Problems? Run `grep pwm.fan.control /var/log/syslog` and include the output in y
 ## Requirements
 
 - Unraid 6.12 or newer.
-- A motherboard sensor chip whose driver exposes PWM outputs, for example `nct6775` or `it87`. Unraid often loads
-  it by itself. If no fans show up, install the **Dynamix System Temperature** plugin and let it detect and load the
-  driver.
-- For some chips, `acpi_enforce_resources=lax` on the boot line (*Main > Flash > Syslinux Configuration*):
+- A motherboard sensor chip whose driver exposes PWM outputs, for example `nct6775` or `it87`. Enter the driver
+  under *Drivers to load* in the plugin settings so it is loaded at every boot, or let the **Dynamix System
+  Temperature** plugin detect and load it.
+- `acpi_enforce_resources=lax` on the boot line (*Main > Flash > Syslinux Configuration*), **only if** the kernel log
+  shows an ACPI resource conflict for the chip. Then the BIOS claims the chip, and the driver can't load or offers no
+  fan outputs, so no PWM value can be written. The *Hardware check* at the bottom of the plugin page shows whether
+  this is the case. Many boards don't need it (newer kernels can use the board's own interface, for example on
+  some ASUS boards).
 
   ```
   append initrd=/bzroot acpi_enforce_resources=lax
@@ -117,6 +121,12 @@ control. Disabling fan control, removing a fan from its group or removing the pl
 Fans and kernel sensors are stored by chip name and device instead of `hwmonN`, so the setup keeps working when the
 hwmon numbers change after a reboot or a kernel update.
 
+Names, RPM pairings and groups belong to the **header**, not to the fan. If you move fans to other headers, the
+plugin keeps controlling the headers as before, so the fans now follow the wrong temperatures. After a speed test,
+the plugin notices this when a fan runs much faster or slower than it measured (most fan models differ a lot), and a
+header that is now empty shows up as a stopped fan. Two identical fans swapped with each other can't be detected, so
+run *Identify* after rewiring.
+
 ### When something goes wrong
 
 A failure makes fans run faster, never slower.
@@ -128,13 +138,16 @@ A failure makes fans run faster, never slower.
 | `nvidia-smi` hangs, for example after a GPU or driver crash | `nvidia-smi` runs in the background and is never waited on, and a run is stopped after 5 seconds. If no fresh reading arrives for 20 seconds (or 3 checks, whichever is longer), the GPU counts as unreadable. Groups that don't use the GPU keep working normally. |
 | The Nvidia driver is still loading at boot | Groups that follow a GPU run at full speed until it is ready. |
 | An error inside the service | Every controlled fan runs at full speed, the error is logged, and the next check tries again. |
-| The service crashes or freezes | A crash sets every controlled fan to full speed. A watchdog checks every minute and restarts the service. A service that hasn't updated its status for 90 seconds counts as frozen. |
-| A fan in a group disappears (driver not loaded) | Shown and logged as a warning. The other fans keep working. |
-| A fan reports 0 RPM for 20 seconds while it should spin | Warning: the fan or its cable may have failed. Needs a paired RPM sensor (from *Identify*, the speed test or picked by hand). Without a speed test, a fan counts as "should spin" from 30%. |
+| The service crashes or freezes | A crash sets every controlled fan to full speed and sends an alert right away. A watchdog checks every minute and restarts the service, and sends an alert when it had to (at most once an hour). A service that hasn't updated its status for 90 seconds counts as frozen. |
+| A fan in a group disappears | Warning, with the likely reason: the chip is gone (driver not loaded, ACPI conflict, see the *Hardware check*) or the chip is there but not this output (hardware or BIOS changed). The other fans keep working. |
+| A fan reports 0 RPM for 20 seconds while it should spin | Warning: the fan or its cable failed, or the fan was moved to another header. Needs a paired RPM sensor (from *Identify*, the speed test or picked by hand). Without a speed test, a fan counts as "should spin" from 30%. |
+| A fan runs below 65% or above 150% of the RPM its speed test measured at the same speed, for a minute | Warning: a different fan is probably connected to this header now. Needs a paired RPM sensor and a speed test. |
 | Something else keeps changing the speed or mode of a fan | Warning: another fan control is probably running. |
 
 Warnings are shown on the settings page and the dashboard tile, and logged. A warning that lasts more than a minute
-also sends an Unraid notification, and another one when it is resolved (*Send notifications*).
+also sends an Unraid **alert** notification (red), and a normal notification when it is resolved (*Send
+notifications*). Configure in *Settings > Notification Settings* where alerts go (browser, email, Telegram, ...).
+The page also points out fans in a group that have no paired RPM sensor, because those can't be watched.
 
 ## Settings
 
@@ -154,7 +167,8 @@ General:
 | Enable fan control | While *No*, the plugin never changes a fan. |
 | Check temperatures every | 2, 3, 5, 10, 15 or 30 seconds. Default 5. |
 | Log speed changes to syslog | Logs changes of 5% or more, and every switch to or from full speed. |
-| Send notifications | Unraid notifications for problems that last more than a minute, and when they are resolved. |
+| Send notifications | Unraid alerts for problems that last more than a minute, for crashes and watchdog restarts, and a notice when a problem is resolved. |
+| Drivers to load | Fan controller drivers loaded at boot and when the settings are saved, before fan control starts. Several separated by `;`, module options allowed, for example `it87 force_id=0x8628; nct6775`. Leave empty when another plugin loads the driver. |
 | Identify: slow speed | Speed used for the slow step of *Identify*. 0% stops most fans. |
 | Identify: seconds per step | How long the slow and the full speed step of *Identify* last. 3-30, default 8. |
 | Disk types to monitor | Which disk types the array disks source looks at: parity, data, pools, unassigned devices, flash. Single disks can be unticked in the disk list, for example an NVMe cache that runs hot but isn't cooled by the case fans. |
@@ -174,15 +188,23 @@ Changes to groups and settings only take effect after *Apply*. Names are saved r
 - Per group: the fan curves with the current temperature of each source, and a chart of the last 24 hours of
   source temperatures and fan speed. History is kept in memory and starts over after a reboot.
 - The disks the array disks source looks at, with their temperature and state.
-- Warnings, such as unreadable sources or missing fans.
+- Warnings, such as unreadable sources, missing, stopped or moved fans.
+- A hardware check: the loaded fan driver, the fan outputs found, ACPI resource conflicts in the kernel log and
+  whether `acpi_enforce_resources=lax` is set and needed, with what to do.
 
 The dashboard gets a *PWM Fan Control* tile with the speed of every group, the RPM of every named fan and the number
 of warnings.
 
 ## Troubleshooting
 
-- **No fans listed:** the sensor driver isn't loaded. Install *Dynamix System Temperature* and let it detect the
-  driver, and add `acpi_enforce_resources=lax` to the boot line if the driver complains about an ACPI conflict.
+- **No fans listed:** the sensor driver isn't loaded, or can't use the chip. The *Hardware check* at the bottom of the
+  page says which: enter the driver under *Drivers to load* (or let *Dynamix System Temperature* detect it), and add
+  `acpi_enforce_resources=lax` to the boot line if the kernel log shows an ACPI resource conflict.
+- **"Fan ... runs much faster/slower than in its speed test":** fans were probably moved to other headers. Check
+  which fan each header drives with *Identify*, fix the names and groups, then run the speed test again. If it's
+  the same fan, it may be worn or blocked.
+- **"Fan ... was not found":** the warning says whether the chip is missing (driver) or only that output (hardware
+  or BIOS changed). In the second case, add the fan to its group again.
 - **Identify: no RPM sensor reacted:** nothing is connected to that header, the fan has no RPM wire, or the header
   is in DC mode in the BIOS. If you saw or heard a fan change speed, it still works: pick its RPM sensor by hand or
   choose *None*.
@@ -212,7 +234,7 @@ All plugin files live in `source/`:
 | Path | Contents |
 |---|---|
 | `source/emhttp/` | Installed to `/usr/local/emhttp/plugins/pwm.fan.control/`: settings page, dashboard tile, API, service and scripts. |
-| `source/emhttp/include/` | `config.php` (settings), `hardware.php` (hwmon, fan names), `sources.php` (temperatures, curves), `service.php` (service, fan tests), `controller.php` (the control loop), `api.php` (web UI requests). `common.php` loads them all. |
+| `source/emhttp/include/` | `config.php` (settings), `hardware.php` (hwmon, fan names, drivers, hardware check), `sources.php` (temperatures, curves), `service.php` (service, fan tests), `controller.php` (the control loop), `api.php` (web UI requests). `common.php` loads them all. |
 | `source/emhttp/scripts/` | `daemon.php` (the service), `rc.pwmfancontrol` (start/stop/watchdog), `fantest.php` (Identify and speed test), `release.php` (hands every fan back to the BIOS). |
 | `source/install.sh` | Runs after every install, update and boot: imports old settings and starts the service if enabled. |
 | `source/remove.sh` | Runs when the plugin is removed. |
