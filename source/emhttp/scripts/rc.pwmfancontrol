@@ -12,12 +12,10 @@ running() {
     [[ -f "$PIDFILE" ]] && kill -0 "$(cat "$PIDFILE" 2>/dev/null)" 2>/dev/null
 }
 
-# Unraid alert notification (if enabled), at most once an hour so a service that keeps failing doesn't flood
+# Unraid alert notification (if enabled). At most one service alert an hour, shared with the crash alert
+# of the service itself, so a service that keeps failing doesn't flood.
 alert() {
-    local flag="/tmp/$NAME/watchdog.notified"
-    [[ -f "$flag" ]] && (( $(date +%s) - $(stat -c %Y "$flag") < 3600 )) && return
-    mkdir -p "/tmp/$NAME" && touch "$flag"
-    "$PHP" -r 'require $argv[1]; pfc_notify("Service restarted", $argv[2]);' "$PLUGIN/include/common.php" "$1" >/dev/null 2>&1
+    "$PHP" -r 'require $argv[1]; pfc_notify_limited("service", "Service restarted", $argv[2]);' "$PLUGIN/include/common.php" "$1" >/dev/null 2>&1
 }
 
 start() {

@@ -32,7 +32,8 @@ final class PfcController {
     private const MISMATCH_HIGH  = 1.5;   // ... or above 150% of the speed test = mismatch
     private const CONFLICT_TICKS = 2;     // checks in a row a fan has to be changed by someone else
     private const NOTIFY_AFTER   = 60;    // seconds a warning has to persist before a notification
-    private const RESOLVE_TICKS  = 3;     // checks in a row a warning has to be gone to count as resolved
+    private const RESOLVE_SECONDS = 120;  // a warning has to be gone this long to count as resolved
+    private const REALERT_AFTER  = 14400; // the same warning is alerted at most once in 4 hours
 
     private ?array $cfg = null;
     private ?string $cfgHash = null;
@@ -51,12 +52,14 @@ final class PfcController {
     private array $mismatchSince = []; // fan key => time its RPM was first seen far from the speed test
     private ?array $hwCheck = null;   // pfc_hardware_check() while fans are missing, refreshed every minute
     private array $lastWarnings = []; // warnings of the last good check
-    private array $warnSince = [];    // warning => first seen
-    private array $notified = [];     // warning => true once a notification was sent
-    private array $warnMissing = [];  // warning => checks in a row it was gone
+    private array $alerts;            // see report()
     private int $lastHistory = 0;
 
     public bool $running = true;
+
+    public function __construct() {
+        $this->alerts = self::loadAlerts();
+    }
 
     /** Runs until stopped or disabled, then hands the fans back to the BIOS. */
     public function run(): void {
@@ -346,29 +349,56 @@ final class PfcController {
     /* ----------------------------------------------------------- reporting */
 
     /**
-     * Logs new warnings, and sends a notification for warnings that persist. A warning only counts as
-     * resolved once it is gone for RESOLVE_TICKS checks, so one good reading doesn't restart the clock.
+     * Logs warnings and sends Unraid notifications, without flooding:
+     *   - a warning has to last NOTIFY_AFTER seconds before an alert is sent, and is alerted once,
+     *   - it only counts as resolved once it has been gone for RESOLVE_SECONDS, so a problem that comes
+     *     and goes stays one problem (one alert, one "resolved" notice),
+     *   - the same warning is not alerted again within REALERT_AFTER of its last alert,
+     *   - the state is kept in PFC_ALERTS, so a restart of the service doesn't alert again (it is in
+     *     /tmp, so after a reboot a problem that still exists is alerted once more).
      */
     private function report(array $warnings, int $now): void {
-        $current = array_unique($warnings);
-        foreach ($current as $w) {
-            $this->warnMissing[$w] = 0;
-            if (!isset($this->warnSince[$w])) {
+        $a = &$this->alerts;
+        $before = $a;
+        foreach (array_unique($warnings) as $w) {
+            $e = $a['active'][$w] ?? null;
+            if (!$e) {
                 pfc_log("Warning: $w");
-                $this->warnSince[$w] = $now;
+                $e = ['since' => $now, 'gone' => null, 'handled' => false, 'alerted' => false];
             }
-            if (empty($this->notified[$w]) && $now - $this->warnSince[$w] >= self::NOTIFY_AFTER) {
-                $this->notified[$w] = true;
-                pfc_notify('Fan problem', $w, 'alert');
+            $e['gone'] = null;
+            if (!$e['handled'] && $now - $e['since'] >= self::NOTIFY_AFTER) {
+                $e['handled'] = true;
+                if ($now - ($a['sent'][$w] ?? 0) >= self::REALERT_AFTER) {
+                    pfc_notify('Fan problem', $w, 'alert');
+                    $a['sent'][$w] = $now;
+                    $e['alerted'] = true;
+                }
             }
+            $a['active'][$w] = $e;
         }
-        foreach (array_diff(array_keys($this->warnSince), $current) as $w) {
-            $this->warnMissing[$w] = ($this->warnMissing[$w] ?? 0) + 1;
-            if ($this->warnMissing[$w] < self::RESOLVE_TICKS) continue;
-            if (!empty($this->notified[$w])) pfc_notify('Problem resolved', $w, 'normal');
+        foreach ($a['active'] as $w => $e) {
+            if (in_array($w, $warnings, true)) continue;
+            if ($e['gone'] === null) { $a['active'][$w]['gone'] = $now; continue; }
+            if ($now - $e['gone'] < self::RESOLVE_SECONDS) continue;
+            if ($e['alerted']) pfc_notify('Problem resolved', $w, 'normal');
             pfc_log("Resolved: $w");
-            unset($this->warnSince[$w], $this->notified[$w], $this->warnMissing[$w]);
+            unset($a['active'][$w]);
         }
+        $a['sent'] = array_filter($a['sent'], fn($t) => $now - $t < self::REALERT_AFTER);
+        if ($a !== $before) pfc_write_json(PFC_ALERTS, $a);
+    }
+
+    private static function loadAlerts(): array {
+        $a = pfc_read_json(PFC_ALERTS, []);
+        $active = [];
+        foreach (is_array($a['active'] ?? null) ? $a['active'] : [] as $w => $e) {
+            if (!is_array($e) || !isset($e['since'])) continue;
+            $active[(string)$w] = ['since' => (int)$e['since'], 'gone' => isset($e['gone']) ? (int)$e['gone'] : null,
+                'handled' => !empty($e['handled']), 'alerted' => !empty($e['alerted'])];
+        }
+        $sent = array_map('intval', array_filter(is_array($a['sent'] ?? null) ? $a['sent'] : [], 'is_numeric'));
+        return ['active' => $active, 'sent' => $sent];
     }
 
     private function recordHistory(int $now, array $sources, array $groups): void {

@@ -32,6 +32,8 @@ const PFC_FANTEST    = PFC_RUN . '/fantest.json';
 const PFC_STOP_FLAG  = PFC_RUN . '/fantest.stop';
 const PFC_NV_CACHE   = PFC_RUN . '/nvidia.json';
 const PFC_HW_CACHE   = PFC_RUN . '/hardware.json';
+const PFC_ALERTS     = PFC_RUN . '/alerts.json';         // warnings and the alerts sent for them
+const PFC_NOTIFY_LIMITS = PFC_RUN . '/notify-limits.json'; // rate limits of service alerts
 const PFC_PIDFILE    = '/var/run/' . PFC_NAME . '.pid';
 const PFC_RC         = PFC_PLUGIN . '/scripts/rc.pwmfancontrol';
 const PFC_HWMON      = '/sys/class/hwmon';
@@ -104,6 +106,19 @@ function pfc_notify(string $subject, string $description, string $level = 'alert
     if (!is_executable(PFC_NOTIFY) || !pfc_load_config()['notify']) return;
     exec(escapeshellarg(PFC_NOTIFY) . ' -e ' . escapeshellarg('PWM Fan Control') . ' -s ' . escapeshellarg("PWM Fan Control: $subject")
         . ' -d ' . escapeshellarg($description) . ' -i ' . escapeshellarg($level) . ' >/dev/null 2>&1');
+}
+
+/**
+ * A notification that is sent at most once per $every seconds for the same $key, e.g. for a service
+ * that keeps crashing. Used by the service and the watchdog (rc.pwmfancontrol).
+ */
+function pfc_notify_limited(string $key, string $subject, string $description, int $every = 3600): void {
+    $limits = pfc_read_json(PFC_NOTIFY_LIMITS, []);
+    if (!is_array($limits)) $limits = [];
+    if (time() - (int)($limits[$key] ?? 0) < $every) return;
+    $limits[$key] = time();
+    pfc_write_json(PFC_NOTIFY_LIMITS, $limits);
+    pfc_notify($subject, $description);
 }
 
 function pfc_pid_alive($pid): bool {

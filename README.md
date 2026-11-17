@@ -138,15 +138,24 @@ A failure makes fans run faster, never slower.
 | `nvidia-smi` hangs, for example after a GPU or driver crash | `nvidia-smi` runs in the background and is never waited on, and a run is stopped after 5 seconds. If no fresh reading arrives for 20 seconds (or 3 checks, whichever is longer), the GPU counts as unreadable. Groups that don't use the GPU keep working normally. |
 | The Nvidia driver is still loading at boot | Groups that follow a GPU run at full speed until it is ready. |
 | An error inside the service | Every controlled fan runs at full speed, the error is logged, and the next check tries again. |
-| The service crashes or freezes | A crash sets every controlled fan to full speed and sends an alert right away. A watchdog checks every minute and restarts the service, and sends an alert when it had to (at most once an hour). A service that hasn't updated its status for 90 seconds counts as frozen. |
+| The service crashes or freezes | A crash sets every controlled fan to full speed and sends an alert right away. A watchdog checks every minute and restarts the service, and sends an alert when it had to. Crash and watchdog alerts together are sent at most once an hour. A service that hasn't updated its status for 90 seconds counts as frozen. |
 | A fan in a group disappears | Warning, with the likely reason: the chip is gone (driver not loaded, ACPI conflict, see the *Hardware check*) or the chip is there but not this output (hardware or BIOS changed). The other fans keep working. |
 | A fan reports 0 RPM for 20 seconds while it should spin | Warning: the fan or its cable failed, or the fan was moved to another header. Needs a paired RPM sensor (from *Identify*, the speed test or picked by hand). Without a speed test, a fan counts as "should spin" from 30%. |
 | A fan runs below 65% or above 150% of the RPM its speed test measured at the same speed, for a minute | Warning: a different fan is probably connected to this header now. Needs a paired RPM sensor and a speed test. |
 | Something else keeps changing the speed or mode of a fan | Warning: another fan control is probably running. |
 
-Warnings are shown on the settings page and the dashboard tile, and logged. A warning that lasts more than a minute
-also sends an Unraid **alert** notification (red), and a normal notification when it is resolved (*Send
-notifications*). Configure in *Settings > Notification Settings* where alerts go (browser, email, Telegram, ...).
+Warnings are shown on the settings page and the dashboard tile right away, and logged. A warning that lasts more
+than a minute also sends an Unraid **alert** notification (red), and a normal notification when it is resolved
+(*Send notifications*). Configure in *Settings > Notification Settings* where alerts go (browser, email, Telegram,
+...). Notifications are kept quiet on purpose:
+
+- A problem that can't be fixed sends one alert, not one per check.
+- A problem only counts as resolved once it has been gone for 2 minutes, so a problem that comes and goes stays one
+  problem.
+- The same problem is alerted at most once every 4 hours, also when it was resolved in between.
+- Restarting the service (or saving settings) doesn't alert again. After a reboot, a problem that still exists is
+  alerted once more.
+
 The page also points out fans in a group that have no paired RPM sensor, because those can't be watched.
 
 ## Settings

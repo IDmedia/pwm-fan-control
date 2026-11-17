@@ -25,7 +25,7 @@ register_shutdown_function(function () use ($controller, &$finished) {
     $msg = 'The service crashed, fans run at full speed until the watchdog restarts it (within a minute)' . ($error ? ': ' . $error['message'] : '.');
     pfc_log($msg);
     $controller->failsafe();
-    pfc_notify('Service crashed', $msg);
+    pfc_notify_limited('service', 'Service crashed', $msg); // shares its hourly limit with the watchdog alert
 });
 
 if (function_exists('pcntl_async_signals')) {
