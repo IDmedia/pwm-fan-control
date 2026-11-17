@@ -17,7 +17,7 @@ Problems? Run `grep pwm.fan.control /var/log/syslog` and include the output in y
 
 ## Requirements
 
-- Unraid 6.12 or newer.
+- Unraid 7.4 or newer.
 - A motherboard sensor chip whose driver exposes PWM outputs, for example `nct6775` or `it87`. Enter the driver
   under *Drivers to load* in the plugin settings so it is loaded at every boot, or let the **Dynamix System
   Temperature** plugin detect and load it.

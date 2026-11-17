@@ -1,4 +1,5 @@
 ###2026.11.17
+- Requires Unraid 7.4 or newer
 - Speed test: steps a fan down from 100% until it stops, then finds the speed it needs to start again; the fan stands still only for a few seconds at a time
 - Fan tests don't start, and stop right away, when the fan's group needs it (temperature at or above high, source unreadable, parity check)
 - Identify slows fans to 20% by default instead of stopping them, 5 seconds per step

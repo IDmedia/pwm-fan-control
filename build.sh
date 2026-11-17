@@ -36,7 +36,7 @@ cat << EOF
 <!ENTITY pluginURL "$PLUGIN_URL">
 <!ENTITY emhttp    "/usr/local/emhttp/plugins/&name;">
 ]>
-<PLUGIN name="&name;" author="&author;" version="&version;" pluginURL="&pluginURL;" min="6.12.0" icon="snowflake-o" launch="Settings/PWMFanControl">
+<PLUGIN name="&name;" author="&author;" version="&version;" pluginURL="&pluginURL;" min="7.4.0" icon="snowflake-o" launch="Settings/PWMFanControl">
 
 <CHANGES>
 $(tr -d '\r' < "$HERE/CHANGES.md")
