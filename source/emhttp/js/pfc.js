@@ -502,10 +502,17 @@
     const current = samples.length ? samples[samples.length - 1].rpm : (ft.before || {});
     const keys = Object.keys(ft.before || current || {});
     if (keys.length) {
-      // Identify: the last RPM of the slow and the full speed step. Speed test: at 100% and at 0%.
+      // Identify: the last RPM of the slow and the full speed step. Speed test: at 100% and at the lowest
+      // speed reached going down (the test stops going down once the fan stands still).
       const at = {};
-      samples.forEach(s => { at[speed ? s.pwm : s.phase] = s.rpm; });
-      const cols = speed ? [['100%', 255], ['0%', 0]] : [['Slow', 'low'], ['Full', 'high']];
+      let lowest = 255;
+      samples.forEach(s => {
+        if (!speed) { at[s.phase] = s.rpm; return; }
+        if (s.phase !== 'down') return;
+        at[s.pwm] = s.rpm;
+        lowest = Math.min(lowest, s.pwm);
+      });
+      const cols = speed ? [['100%', 255], [pct(lowest) + '%', lowest]] : [['Slow', 'low'], ['Full', 'high']];
       html += '<div class="pfc-fantest-body"><table class="pfc-table pfc-fantest-table"><thead><tr><th>RPM sensor</th><th>Before</th><th>Now</th>' +
         cols.map(c => '<th>' + c[0] + '</th>').join('') + '<th></th></tr></thead><tbody>';
       keys.forEach(k => {

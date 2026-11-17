@@ -40,9 +40,12 @@ $pfc_v = @filemtime("/usr/local/emhttp$pfc_dir/js/pfc.js");
   <p class="pfc-muted">
     Click <b>Identify</b> to slow a fan down and spin it up to full speed, then watch or listen to see which fan reacts.
     The RPM sensor that reacts is paired with the output automatically. Give each fan a name, then add it to a group above.
-    <b>Speed test</b> measures the RPM from 100% down to 0%, and shows the speed a fan stops at and the speed it needs to
-    start again. With a paired RPM sensor, a fan that stops spinning while it should run is reported, and after a speed test also
-    a fan that runs much faster or slower than measured, which usually means fans were moved to other headers.
+    <b>Speed test</b> steps the fan down from 100% until it stops, and shows the speed a fan stops at and the speed it needs to
+    start again. The fan stands still only for a few seconds at a time. With a paired RPM sensor, a fan that stops spinning while
+    it should run is reported, and after a speed test also a fan that runs much faster or slower than measured, which usually
+    means fans were moved to other headers.
+    During a test the fan doesn't follow its group, so a test doesn't start, and stops right away, when the group needs the fan:
+    a temperature at or above its <b>high</b> setting, a source that can't be read, or a parity check.
   </p>
   <div class="pfc-table-wrap">
     <table class="pfc-table" id="pfc-pwm-table">
@@ -126,7 +129,7 @@ $pfc_v = @filemtime("/usr/local/emhttp$pfc_dir/js/pfc.js");
       <span class="pfc-muted">Fan controller drivers loaded at boot, before fan control starts. Separate several with ";", options are allowed
         (e.g. "it87 force_id=0x8628"). Leave empty if another plugin (e.g. Dynamix System Temperature) loads the driver.</span>
     </dd></dl>
-    <dl><dt>Identify: slow speed:</dt><dd><input type="number" min="0" max="100" class="pfc-narrow" data-cfg="identify.low_pwm" data-type="pct"> % <span class="pfc-muted">0% stops most fans.</span></dd></dl>
+    <dl><dt>Identify: slow speed:</dt><dd><input type="number" min="0" max="100" class="pfc-narrow" data-cfg="identify.low_pwm" data-type="pct"> % <span class="pfc-muted">Default 20%: clearly slower, without stopping the fan. 0% stops most fans.</span></dd></dl>
     <dl><dt>Identify: seconds per step:</dt><dd><input type="number" min="3" max="30" class="pfc-narrow" data-cfg="identify.seconds" data-type="int"></dd></dl>
     <dl><dt>&nbsp;</dt><dd>
       <button type="button" class="pfc-apply">Apply</button>

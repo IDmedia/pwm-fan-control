@@ -4,19 +4,25 @@
  * Usage: php fantest.php identify|speed <fan key>
  *
  *   identify  Slows the fan down, then runs it at full speed, so you can see and hear which fan it is.
- *   speed     Steps the fan from 100% down to 0% and back up until it starts again, and records the
- *             RPM at every step: the lowest speed it keeps running at and the speed it needs to start.
+ *   speed     Steps the fan down from 100% and records the RPM at every step, until it stops (or 0% is
+ *             reached). Then finds the speed it needs to start again, trying from the lowest speed it
+ *             kept running at upwards. The fan stands still only for a few seconds at a time.
  *
  * Every RPM sensor on the same chip is sampled once per second. Progress is written to PFC_FANTEST so
- * the web UI can show it live. If exactly one sensor reacts, it is paired with the output. The output
- * is always restored to its previous speed and mode afterwards, also when the test is stopped.
- * While a test runs, the service leaves this fan alone.
+ * the web UI can show it live. If exactly one sensor reacts, it is paired with the output.
+ *
+ * While a test runs, the service leaves this fan alone. So the test is stopped right away when the fan's
+ * group needs it (a temperature reaches "high", can't be read, or a parity check starts), see
+ * pfc_fan_needed(). The output is always restored to its previous speed and mode afterwards.
  */
 require_once dirname(__DIR__) . '/include/common.php';
 
-const PFC_SPEED_DOWN = [255, 204, 153, 102, 77, 51, 38, 26, 13, 0]; // 100% .. 0%
-const PFC_SPEED_UP   = [13, 26, 38, 51, 77, 102, 153];              // until the fan starts again
-const PFC_SPEED_STEP = 5;                                           // seconds per step
+const PFC_SPEED_DOWN   = [255, 204, 153, 102, 77, 51, 38, 26, 13, 0]; // 100% .. 0%
+const PFC_SPEED_UP     = [26, 38, 51, 77, 102, 153, 204, 255];        // start tries, from the lowest running speed up
+const PFC_SPEED_STEP   = 5;   // seconds per step going down: time for the RPM to settle
+const PFC_START_STEP   = 3;   // seconds per start try: a fan that starts does so within 1-2 seconds
+const PFC_FOLLOW_PWM   = 102; // from this step on, sensors that follow the speed changes are watched for a stop
+const PFC_NEEDED_EVERY = 2;   // seconds between checks whether the fan's group needs the fan
 
 $mode = $argv[1] ?? '';
 $key = $argv[2] ?? '';
@@ -36,7 +42,7 @@ $paired = pfc_confirmed_rpm($fans, $key);
 
 $low_pwm = max(0, min(255, (int)$cfg['identify']['low_pwm']));
 $seconds = max(3, min(30, (int)$cfg['identify']['seconds']));
-$total = $mode === 'identify' ? 2 * $seconds : (count(PFC_SPEED_DOWN) + 2) * PFC_SPEED_STEP;
+$total = $mode === 'identify' ? 2 * $seconds : count(PFC_SPEED_DOWN) * PFC_SPEED_STEP + 2;
 
 $state = [
     'key'      => $key,
@@ -77,19 +83,28 @@ $sample = function () use ($sensors): array {
     return $out;
 };
 
-/** Runs the fan at $pwm for $secs seconds. Returns the last RPM sample, or null when stopped. */
-$hold = function (string $phase, int $pwm, int $secs) use (&$state, $path, $sample, &$total): ?array {
+$needed = null; // why the test was stopped because the fan was needed
+
+/**
+ * Runs the fan at $pwm for up to $secs seconds, sampling once per second. Ends early when $until($rpm)
+ * returns true. Returns the last RPM sample, or null when the test was stopped (by the user, or because
+ * the fan's group needs the fan).
+ */
+$hold = function (string $phase, int $pwm, int $secs, ?callable $until = null)
+        use (&$state, &$total, &$needed, $path, $sample, $cfg, $key): ?array {
     $state['phase'] = $phase;
     $state['pwm'] = $pwm;
     @file_put_contents($path, (string)$pwm);
     $rpm = [];
-    for ($i = 0; $i < $secs; $i++) {
+    for ($i = 1; $i <= $secs; $i++) {
         sleep(1);
         $rpm = $sample();
         $state['samples'][] = ['phase' => $phase, 'pwm' => $pwm, 'rpm' => $rpm];
-        $state['progress'] = max($state['progress'], min(99, (int)round(count($state['samples']) * 100 / $total)));
+        $state['progress'] = max($state['progress'], min(99, (int)round(count($state['samples']) * 100 / max(1, $total))));
         pfc_write_json(PFC_FANTEST, $state);
         if (is_file(PFC_STOP_FLAG)) return null;
+        if (count($state['samples']) % PFC_NEEDED_EVERY === 0 && ($needed = pfc_fan_needed($cfg, $key)) !== null) return null;
+        if ($until && $until($rpm)) break;
     }
     return $rpm;
 };
@@ -117,15 +132,27 @@ if ($mode === 'identify') {
     if ($high === null) $stopped = true;
     else $state['reacted'] = $reacting($low, $high);
 } else {
-    // Down: record the RPM at every step
+    // Down: record the RPM at every step, and stop going down once the fan stands still. Which sensor
+    // belongs to the fan is known once the speed has dropped a bit: the ones that follow the steps.
     $down = [];
+    $watch = $paired ? [$paired] : [];
+    $isStopped = function (array $rpm) use (&$watch): bool {
+        foreach ($watch as $k) if (($rpm[$k] ?? null) === 0) return true;
+        return false;
+    };
     foreach (PFC_SPEED_DOWN as $pwm) {
-        $rpm = $hold('down', $pwm, PFC_SPEED_STEP + ($pwm === 255 ? 2 : 0)); // the first step may spin up from slow
+        $check = $watch && $pwm !== 255 ? $isStopped : null; // at 100% a fan may still be spinning up from standstill
+        $rpm = $hold('down', $pwm, PFC_SPEED_STEP + ($pwm === 255 ? 2 : 0), $check); // the first step may spin up from slow
         if ($rpm === null) { $stopped = true; break; }
         $down[$pwm] = $rpm;
+        if ($check && $isStopped($rpm)) break;
+        if (!$paired && $pwm === PFC_FOLLOW_PWM) {
+            $watch = array_keys(array_filter($rpm, fn($r, $k) => $r !== null && (int)($down[255][$k] ?? 0) > 0 && $r < 0.8 * $down[255][$k], ARRAY_FILTER_USE_BOTH));
+        }
     }
     if (!$stopped) {
-        $state['reacted'] = $reacting($down[0], $down[255]);
+        $last = array_key_last($down);
+        $state['reacted'] = $reacting($down[$last], $down[255]);
         $sensor = $paired ?? (count($state['reacted']) === 1 ? $state['reacted'][0] : null);
         if ($sensor === null) {
             $state['error'] = count($state['reacted']) > 1
@@ -138,21 +165,24 @@ if ($mode === 'identify') {
             $min_pwm = $running ? min(array_column($running, 0)) : null;
             $start_pwm = null;
             if ($min_pwm === null) $state['error'] = 'The fan did not spin at any speed. Check the fan, its cable and the RPM sensor pairing.';
-            // Up: if the fan stopped, find the speed it needs to start again
-            if (($down[0][$sensor] ?? 0) === 0 && $min_pwm !== null) {
-                $total = count($state['samples']) + count(PFC_SPEED_UP) * PFC_SPEED_STEP;
-                $start_pwm = 255;
-                foreach (PFC_SPEED_UP as $pwm) {
-                    $rpm = $hold('up', $pwm, PFC_SPEED_STEP);
+            // Up: the fan stopped, find the speed it needs to start again. It can't start below the lowest
+            // speed it kept running at, so the tries begin there.
+            if ($min_pwm !== null && ($down[$last][$sensor] ?? null) === 0) {
+                $tries = array_values(array_filter(PFC_SPEED_UP, fn($p) => $p >= $min_pwm));
+                $total = count($state['samples']) + count($tries) * PFC_START_STEP;
+                $started = fn($rpm) => (int)($rpm[$sensor] ?? 0) > 0;
+                foreach ($tries as $pwm) {
+                    $rpm = $hold('up', $pwm, PFC_START_STEP, $started);
                     if ($rpm === null) { $stopped = true; break; }
-                    if ((int)($rpm[$sensor] ?? 0) > 0) { $start_pwm = $pwm; break; }
+                    if ($started($rpm)) { $start_pwm = $pwm; break; }
                 }
+                if (!$stopped && $start_pwm === null) $state['error'] = 'The fan did not start again, not even at 100%. Check the fan.';
             }
-            if (!$stopped && $min_pwm !== null) {
+            if (!$stopped && $min_pwm !== null && !$state['error']) {
                 $state['result'] = [
                     'done' => true, 'time' => time(), 'rpm_key' => $sensor, 'points' => $points,
                     'max_rpm' => $down[255][$sensor] ?? null,
-                    'min_pwm' => $min_pwm ?? 0,   // lowest speed it keeps running at
+                    'min_pwm' => $min_pwm,        // lowest speed it keeps running at
                     'start_pwm' => $start_pwm,    // speed it needs to start from standstill (null: never stops)
                 ];
             }
@@ -163,7 +193,8 @@ $restore();
 @unlink(PFC_STOP_FLAG);
 
 if ($stopped) {
-    $state['error'] = 'Stopped';
+    $state['error'] = $needed !== null ? "Stopped early, the fan is needed: $needed. Try again when it is cooler." : 'Stopped';
+    if ($needed !== null) pfc_log("Fan test of $key stopped early, the fan is needed: $needed");
 } else {
     // Store the pairing (when exactly one sensor reacted) and the speed test result
     $fans = pfc_load_fans();

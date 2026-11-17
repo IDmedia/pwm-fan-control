@@ -144,6 +144,8 @@ case 'fantest':
     $hw = pfc_scan_hwmon();
     if (!isset($hw['pwm'][$key])) pfc_fail('Unknown fan.');
     if (!$hw['pwm'][$key]['writable']) pfc_fail('This PWM output is not writable.');
+    $needed = pfc_fan_needed(pfc_load_config(), $key, $hw);
+    if ($needed) pfc_fail("Not started, the fan is needed right now: $needed. Try again when it is cooler.");
     $error = pfc_fantest_start($key, $mode);
     if ($error) pfc_fail($error);
     pfc_reply(['ok' => true]);

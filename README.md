@@ -65,15 +65,19 @@ jumping between their speeds.
 ## Setting up
 
 1. **Identify your fans.** Under *Fans*, click *Identify* next to an output. The fan connected to it slows down
-   (stops by default), then runs at full speed, then goes back to how it was. The page shows the live RPM of every
+   (to 20% by default, so it doesn't stop), then runs at full speed, then goes back to how it was. The page shows the live RPM of every
    fan sensor on that chip, so you can see, hear and read which fan it is. The RPM sensor that reacts is paired
    with the output automatically.
 2. **Name them**, for example *GPU intake* or *Front top*. Fan sensors without speed control, like a pump, can be
    named under *Other fan sensors*. Temperature sources can be named too, for example *Top GPU*.
-3. **Run a speed test** (optional, about a minute per fan). The fan steps from 100% down to 0% and back up while the
-   page records its RPM. The result shows the lowest speed it keeps running at and the speed it needs to start again
-   after it stopped. The fan stops for a while during the test, so don't run it on a fan that is cooling something
-   hot right now.
+3. **Run a speed test** (optional, about a minute per fan). The fan steps down from 100% until it stops, while the
+   page records its RPM, then the test finds the speed it needs to start again, trying from the lowest speed it kept
+   running at upwards. The result shows both speeds. The fan stands still only for a few seconds at a time.
+
+   During *Identify* and the speed test, the fan doesn't follow its group. So a test doesn't start, and stops right
+   away and restores the fan, when the group needs the fan: one of its temperatures is at or above its *high*
+   setting, a source can't be read, or a parity check runs. Fans in no group aren't checked, so test those only
+   when nothing they cool is hot.
 4. **Create groups.** Under *Fan groups*, click *Add group*, tick the fans that belong to it and add one or more
    temperature sources. A fan can only be in one group.
 5. **Adjust the curves.** The chart next to each group updates while you type, and a dot shows where each source
@@ -182,8 +186,8 @@ General:
 | Log speed changes to syslog | Logs changes of 5% or more, and every switch to or from full speed. |
 | Send notifications | Unraid alerts for problems that last more than a minute, for crashes and watchdog restarts, and a notice when a problem is resolved. |
 | Drivers to load | Fan controller drivers loaded at boot and when the settings are saved, before fan control starts. Several separated by `;`, module options allowed, for example `it87 force_id=0x8628; nct6775`. Leave empty when another plugin loads the driver. |
-| Identify: slow speed | Speed used for the slow step of *Identify*. 0% stops most fans. |
-| Identify: seconds per step | How long the slow and the full speed step of *Identify* last. 3-30, default 8. |
+| Identify: slow speed | Speed used for the slow step of *Identify*. Default 20%, which slows fans clearly without stopping them. 0% stops most fans. |
+| Identify: seconds per step | How long the slow and the full speed step of *Identify* last. 3-30, default 5. |
 | Disk types to monitor | Which disk types the array disks source looks at: parity, data, pools, unassigned devices, flash. Single disks can be unticked in the disk list, for example an NVMe cache that runs hot but isn't cooled by the case fans. |
 | Full speed during parity check | Whether the array disks source asks for its max speed while a parity check or rebuild runs. |
 

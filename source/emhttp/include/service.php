@@ -41,3 +41,26 @@ function pfc_fantest_start(string $key, string $mode): ?string {
         . escapeshellarg($key) . ' >/dev/null 2>&1 < /dev/null &');
     return null;
 }
+
+/**
+ * Why the fan $key can't be tested right now, or null. While a test runs, the service leaves the fan
+ * alone, so a test must not start (and is stopped) when the fan's group needs it: one of its
+ * temperatures is at or above "high", can't be read, or a parity check runs at full speed. Fans that
+ * are in no group are not checked.
+ */
+function pfc_fan_needed(array $cfg, string $key, ?array $hw = null): ?string {
+    $gid = pfc_controlled_keys($cfg)[$key] ?? null;
+    $group = null;
+    foreach ($cfg['groups'] as $g) if ($g['id'] === $gid) $group = $g;
+    if (!$group || !$group['sources']) return null;
+    $sources = pfc_read_sources($cfg, $hw ?? pfc_scan_hwmon(), pfc_load_fans());
+    foreach ($group['sources'] as $b) {
+        $s = $sources[$b['source']] ?? null;
+        if (!$s || $s['state'] === 'error') return ($s ? pfc_source_name($s) : $b['source']) . " can't be read";
+        if ($s['state'] === 'parity') return 'a parity check is running';
+        if ($s['temp'] !== null && $s['temp'] >= $b['high']) {
+            return pfc_source_name($s) . ' is at ' . pfc_fmt_temp($s['temp']) . " (high: {$b['high']}°C)";
+        }
+    }
+    return null;
+}
