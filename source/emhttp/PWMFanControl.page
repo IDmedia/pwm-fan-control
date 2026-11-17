@@ -79,26 +79,22 @@ $pfc_v = @filemtime("/usr/local/emhttp$pfc_dir/js/pfc.js");
   <label class="pfc-muted"><input type="checkbox" id="pfc-show-all-sensors"> Show all kernel sensors</label>
 
   <!-- Disks -->
-  <div class="title"><span class="left"><i class="fa fa-hdd-o title"></i>Array disks source</span></div>
-  <p class="pfc-muted">The <b>Array disks</b> source reports the hottest monitored disk that is spun up. Untick a disk to ignore it,
-    e.g. an SSD that runs hot but isn't cooled by these fans. Unraid only refreshes disk temperatures every
-    30 minutes by default. You can lower this under Settings &gt; Disk Settings &gt; Tunable (poll_attributes).</p>
+  <div class="title"><span class="left"><i class="fa fa-hdd-o title"></i>Disks</span></div>
+  <p class="pfc-muted">Disk temperatures come as one source per part of the server: <b>Array</b> (parity and data disks), one
+    <b>Pool</b> source for every pool, <b>Unassigned disks</b> and <b>Flash</b>. Each reports the hottest of its disks that is
+    spun up, so HDDs, SSDs and NVMe drives in different pools can have their own curve. Untick a disk to ignore it, e.g. a disk
+    that runs hot but isn't cooled by these fans. Unraid only refreshes disk temperatures every 30 minutes by default. You can
+    lower this under Settings &gt; Disk Settings &gt; Tunable (poll_attributes).</p>
   <div class="pfc-table-wrap">
     <table class="pfc-table" id="pfc-disk-table">
-      <thead><tr><th>Use</th><th>Disk</th><th>Type</th><th>State</th><th>Temperature</th></tr></thead>
+      <thead><tr><th>Use</th><th>Disk</th><th>Source</th><th>State</th><th>Temperature</th></tr></thead>
       <tbody></tbody>
     </table>
   </div>
   <form class="pfc-form" onsubmit="return false">
-    <dl><dt>Disk types to monitor:</dt><dd class="pfc-checks">
-      <label><input type="checkbox" data-cfg="array.include.Parity"> Parity</label>
-      <label><input type="checkbox" data-cfg="array.include.Data"> Data</label>
-      <label><input type="checkbox" data-cfg="array.include.Cache"> Pools/cache</label>
-      <label><input type="checkbox" data-cfg="array.include.Unassigned"> Unassigned</label>
-      <label><input type="checkbox" data-cfg="array.include.Flash"> Flash</label>
-    </dd></dl>
     <dl><dt>Full speed during parity check:</dt><dd>
       <select data-cfg="array.parity_full_speed" data-type="bool"><option value="true">Yes</option><option value="false">No</option></select>
+      <span class="pfc-muted">Applies to the Array source.</span>
     </dd></dl>
   </form>
 

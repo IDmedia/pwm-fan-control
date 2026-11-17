@@ -2,13 +2,19 @@
 <!DOCTYPE PLUGIN [
 <!ENTITY name      "pwm.fan.control">
 <!ENTITY author    "IDmedia">
-<!ENTITY version   "2026.11.17a">
+<!ENTITY version   "2026.11.17b">
 <!ENTITY pluginURL "https://raw.githubusercontent.com/IDmedia/pwm-fan-control/main/pwm.fan.control.plg">
 <!ENTITY emhttp    "/usr/local/emhttp/plugins/&name;">
 ]>
 <PLUGIN name="&name;" author="&author;" version="&version;" pluginURL="&pluginURL;" min="7.4.0" icon="icon-fan" launch="Settings/PWMFanControl">
 
 <CHANGES>
+###2026.11.17b
+- Disk temperatures are now separate sources: Array (parity and data disks), one per pool, Unassigned disks and Flash, so HDD, SSD and NVMe pools can have their own curves
+- Existing groups get the Array source and a source for every pool that was monitored, with the curve of the former Array disks source, so nothing changes until you edit the curves
+- The "Disk types to monitor" setting is gone: add the disk sources you want to a group instead. Single disks can still be unticked
+- Identify without a paired RPM sensor ignores other fans on the same chip that change speed during the test
+
 ###2026.11.17a
 - Fixed: fans at full speed on nct6775 chips were reported as "changed by something else" (the driver shows manual mode at 100% as mode 0)
 - When a fan's speed keeps being changed by something else, the syslog says what was set and found, and whether the mode changed (BIOS) or only the speed (another program)
@@ -139,26 +145,22 @@ $pfc_v = @filemtime("/usr/local/emhttp$pfc_dir/js/pfc.js");
   <label class="pfc-muted"><input type="checkbox" id="pfc-show-all-sensors"> Show all kernel sensors</label>
 
   <!-- Disks -->
-  <div class="title"><span class="left"><i class="fa fa-hdd-o title"></i>Array disks source</span></div>
-  <p class="pfc-muted">The <b>Array disks</b> source reports the hottest monitored disk that is spun up. Untick a disk to ignore it,
-    e.g. an SSD that runs hot but isn't cooled by these fans. Unraid only refreshes disk temperatures every
-    30 minutes by default. You can lower this under Settings &gt; Disk Settings &gt; Tunable (poll_attributes).</p>
+  <div class="title"><span class="left"><i class="fa fa-hdd-o title"></i>Disks</span></div>
+  <p class="pfc-muted">Disk temperatures come as one source per part of the server: <b>Array</b> (parity and data disks), one
+    <b>Pool</b> source for every pool, <b>Unassigned disks</b> and <b>Flash</b>. Each reports the hottest of its disks that is
+    spun up, so HDDs, SSDs and NVMe drives in different pools can have their own curve. Untick a disk to ignore it, e.g. a disk
+    that runs hot but isn't cooled by these fans. Unraid only refreshes disk temperatures every 30 minutes by default. You can
+    lower this under Settings &gt; Disk Settings &gt; Tunable (poll_attributes).</p>
   <div class="pfc-table-wrap">
     <table class="pfc-table" id="pfc-disk-table">
-      <thead><tr><th>Use</th><th>Disk</th><th>Type</th><th>State</th><th>Temperature</th></tr></thead>
+      <thead><tr><th>Use</th><th>Disk</th><th>Source</th><th>State</th><th>Temperature</th></tr></thead>
       <tbody></tbody>
     </table>
   </div>
   <form class="pfc-form" onsubmit="return false">
-    <dl><dt>Disk types to monitor:</dt><dd class="pfc-checks">
-      <label><input type="checkbox" data-cfg="array.include.Parity"> Parity</label>
-      <label><input type="checkbox" data-cfg="array.include.Data"> Data</label>
-      <label><input type="checkbox" data-cfg="array.include.Cache"> Pools/cache</label>
-      <label><input type="checkbox" data-cfg="array.include.Unassigned"> Unassigned</label>
-      <label><input type="checkbox" data-cfg="array.include.Flash"> Flash</label>
-    </dd></dl>
     <dl><dt>Full speed during parity check:</dt><dd>
       <select data-cfg="array.parity_full_speed" data-type="bool"><option value="true">Yes</option><option value="false">No</option></select>
+      <span class="pfc-muted">Applies to the Array source.</span>
     </dd></dl>
   </form>
 
@@ -549,7 +551,8 @@ default:
  *   Fan     A PWM output on a motherboard/controller chip ("<chip>@<device>/pwmN"). Keys use the chip name
  *           instead of /sys/class/hwmon/hwmonX, because the hwmonX number can change between boots.
  *   Source  Something that reports a temperature:
- *             "array"                  hottest monitored array/pool/unassigned disk
+ *             "array"                  hottest used, spun-up parity or data disk
+ *             "pool:<name>"            the same for one pool; "unassigned" and "flash" for the others
  *             "nvidia:<GPU uuid>"      an Nvidia GPU (via nvidia-smi)
  *             "hwmon:<chip>/tempN"     any kernel temperature sensor (CPU, motherboard, NVMe, ...)
  *   Group   A set of fans following one or more sources. Every source has its own curve and the
@@ -716,24 +719,72 @@ function pfc_default_config(): array {
         'drivers'     => '',      // kernel modules to load, e.g. "nct6775" or "it87 force_id=0x8628; nct6775"
         'identify'    => ['low_pwm' => 51, 'seconds' => 8],   // 20%: slows fans clearly without stopping them
         'array'       => [
+            // Only read when converting an older config (see pfc_migrate_disk_sources)
             'include' => ['Parity' => true, 'Data' => true, 'Cache' => true, 'Unassigned' => true, 'Flash' => false],
-            'exclude' => [],
-            'parity_full_speed' => true,
+            'exclude' => [],                // disks not used by their disk source
+            'parity_full_speed' => true,    // the Array source asks for max speed during a parity check
         ],
         'groups'      => [],
+        'disk_sources' => 2,                // 1: older configs, one "array" source for every disk
     ];
 }
 
 /** Default curve for a new source binding, depending on the kind of source. */
 function pfc_default_binding(string $source): array {
-    if ($source === 'array') return ['source' => $source, 'low' => 35, 'high' => 48, 'min_pwm' => 170, 'max_pwm' => 255, 'idle_pwm' => 170];
+    if ($source === 'array' || $source === 'unassigned') return ['source' => $source, 'low' => 35, 'high' => 48, 'min_pwm' => 170, 'max_pwm' => 255, 'idle_pwm' => 170];
+    if (pfc_is_disk_source($source)) return ['source' => $source, 'low' => 45, 'high' => 65, 'min_pwm' => 90, 'max_pwm' => 255, 'idle_pwm' => 90]; // SSD/NVMe pools, flash
     if (strpos($source, 'nvidia:') === 0) return ['source' => $source, 'low' => 45, 'high' => 75, 'min_pwm' => 90, 'max_pwm' => 255];
     return ['source' => $source, 'low' => 40, 'high' => 70, 'min_pwm' => 90, 'max_pwm' => 255];
 }
 
 function pfc_load_config(): array {
     $saved = pfc_read_json(PFC_CONFIG);
-    return is_array($saved) ? pfc_normalize_config($saved) : pfc_default_config();
+    if (!is_array($saved)) return pfc_default_config();
+    $cfg = pfc_normalize_config($saved);
+    if ($cfg['disk_sources'] < 2) {
+        // Needs Unraid's disk list to know the pools. Until emhttp has written it, the config is used as it is.
+        $disks = pfc_read_disks($cfg);
+        if ($disks) {
+            $cfg = pfc_migrate_disk_sources($cfg, $disks);
+            pfc_save_config($cfg);
+        }
+    }
+    return $cfg;
+}
+
+/**
+ * Converts a config from before the disk sources were split. The single "array" source covered every
+ * disk type ticked under "Disk types to monitor". Every group that used it now gets the Array source
+ * and a source for each pool (and unassigned/flash disks) that was ticked, all with the same curve, so
+ * the fans behave as before until the curves are changed.
+ */
+function pfc_migrate_disk_sources(array $cfg, array $disks): array {
+    $include = $cfg['array']['include'];
+    $present = [];
+    // Only sources with a disk the old source used: a pool whose disks were all unticked stays out
+    foreach ($disks as $d) if ($d['included']) $present[$d['source']] = true;
+    $wanted = [];
+    if ($include['Parity'] || $include['Data']) $wanted[] = 'array';
+    foreach (array_keys($present) as $id) {
+        if (strpos($id, 'pool:') === 0 && $include['Cache']) $wanted[] = $id;
+        if ($id === 'unassigned' && $include['Unassigned']) $wanted[] = $id;
+        if ($id === 'flash' && $include['Flash']) $wanted[] = $id;
+    }
+    if (!$wanted) $wanted = ['array'];
+    foreach ($cfg['groups'] as &$g) {
+        $new = [];
+        foreach ($g['sources'] as $b) {
+            foreach ($b['source'] === 'array' ? $wanted : [$b['source']] as $id) {
+                if (!isset($new[$id])) $new[$id] = ['source' => $id] + $b;
+            }
+        }
+        $g['sources'] = array_values($new);
+        $names = implode(', ', array_map('pfc_disk_source_name', array_filter(array_column($g['sources'], 'source'), 'pfc_is_disk_source')));
+        if ($names !== '') pfc_log("Group \"{$g['name']}\": disk temperatures are now separate sources ($names), with the curve of the former Array disks source");
+    }
+    unset($g);
+    $cfg['disk_sources'] = 2;
+    return $cfg;
 }
 
 /** Fixes types and fills in defaults, so the rest of the code can trust the structure. */
@@ -757,6 +808,7 @@ function pfc_normalize_config(array $cfg): array {
     $exclude = is_array($array['exclude'] ?? null) ? $array['exclude'] : [];
     $out['array']['exclude'] = array_values(array_unique(array_filter(array_map('strval', $exclude), 'strlen')));
     if (array_key_exists('parity_full_speed', $array)) $out['array']['parity_full_speed'] = !empty($array['parity_full_speed']);
+    $out['disk_sources'] = (int)($cfg['disk_sources'] ?? 1);
 
     foreach (is_array($cfg['groups'] ?? null) ? $cfg['groups'] : [] as $g) {
         if (!is_array($g)) continue;
@@ -1181,7 +1233,8 @@ final class PfcController {
             $label = (string)($this->fans['temp'][$id]['label'] ?? '');
             $name = $s ? pfc_source_name($s) : ($label !== '' ? $label : $this->lastKnownName($id));
             if (!$s) {
-                $why = strpos($id, 'nvidia:') === 0 ? 'Is the Nvidia driver loaded and the GPU still installed?' : 'Is its sensor driver loaded?';
+                $why = strpos($id, 'nvidia:') === 0 ? 'Is the Nvidia driver loaded and the GPU still installed?'
+                    : (pfc_is_disk_source($id) ? 'Does it still have disks assigned? Unraid lists no disks for it.' : 'Is its sensor driver loaded?');
                 $warnings[] = "Temperature source \"$name\" of \"{$g['name']}\" was not found, its fans run at full speed. $why";
             } else {
                 $warnings[] = "Temperature source \"$name\" of \"{$g['name']}\" can't be read ({$s['detail']}), its fans run at full speed.";
@@ -1191,6 +1244,7 @@ final class PfcController {
 
     /** A readable name for a source that is gone: the GPU name nvidia-smi last reported, or its id. */
     private function lastKnownName(string $id): string {
+        if (pfc_is_disk_source($id)) return pfc_disk_source_name($id);
         if (strpos($id, 'nvidia:') === 0) {
             foreach (pfc_read_json(PFC_NV_CACHE, [])['gpus'] ?? [] as $gpu) {
                 if ('nvidia:' . ($gpu['uuid'] ?? '') === $id) return "GPU {$gpu['index']}: {$gpu['name']}";
@@ -1436,7 +1490,7 @@ function pfc_scan_hwmon(): array {
             ];
         }
 
-        // Disk temperatures come from Unraid (Array disks source). Reading drivetemp sensors directly
+        // Disk temperatures come from Unraid (the disk sources). Reading drivetemp sensors directly
         // sends commands to the disks, which can keep them from spinning down.
         if ($chip !== 'drivetemp') {
             foreach (glob("$dir/temp*_input") ?: [] as $file) {
@@ -1740,13 +1794,37 @@ function pfc_fan_needed(array $cfg, string $key, ?array $hw = null): ?string {
  * PWM Fan Control - temperature sources and fan curves.
  *
  * A source, as returned by pfc_read_sources():
- *   ['id', 'type' => array|nvidia|hwmon, 'name' (default name), 'label' (user name), 'temp' => ?float,
+ *   ['id', 'type' => disk|nvidia|hwmon, 'name' (default name), 'label' (user name), 'temp' => ?float,
  *    'state' => ok|idle|parity|error, 'detail' => string]
  */
 
-/** Unraid's disks (array, pools and unassigned devices), with whether the Array disks source uses them. */
+/**
+ * The disk source a disk belongs to: "array" (parity and data disks), "pool:<name>" (one per pool),
+ * "unassigned" or "flash". Pool devices are named after their pool ("cache", "cache2", ...), ZFS
+ * subpools as "<pool>~<subpool>", so the pool name is the part before "~" without trailing digits.
+ */
+function pfc_disk_source_id(string $type, string $name): ?string {
+    switch ($type) {
+        case 'Parity': case 'Data': return 'array';
+        case 'Cache': return 'pool:' . preg_replace('/\d+$/', '', explode('~', $name)[0]);
+        case 'Unassigned': return 'unassigned';
+        case 'Flash': case 'Boot': return 'flash';
+    }
+    return null;
+}
+
+function pfc_is_disk_source(string $id): bool {
+    return in_array($id, ['array', 'unassigned', 'flash'], true) || strpos($id, 'pool:') === 0;
+}
+
+/** Default name of a disk source. */
+function pfc_disk_source_name(string $id): string {
+    if (strpos($id, 'pool:') === 0) return 'Pool: ' . substr($id, 5);
+    return ['array' => 'Array', 'unassigned' => 'Unassigned disks', 'flash' => 'Flash'][$id] ?? $id;
+}
+
+/** Unraid's disks (array, pools and unassigned devices), with the disk source each one belongs to. */
 function pfc_read_disks(array $cfg): array {
-    $include = $cfg['array']['include'];
     $exclude = $cfg['array']['exclude'];
     $disks = [];
 
@@ -1763,12 +1841,13 @@ function pfc_read_disks(array $cfg): array {
             $temp = trim((string)($d['temp'] ?? ''), '"');
             $disk = [
                 'name' => (string)$section, 'type' => $type, 'device' => (string)($d['id'] ?? ''),
+                'source' => pfc_disk_source_id($type, (string)$section),
                 'temp' => preg_match('/^\d+$/', $temp) ? (int)$temp : null,
                 'spundown' => ($d['spundown'] ?? '0') == '1',
                 'included' => true, 'reason' => '',
             ];
             if ($disk['device'] === '') { $disk['included'] = false; $disk['reason'] = 'Not assigned'; }
-            elseif (empty($include[$type])) { $disk['included'] = false; $disk['reason'] = "$type disks not monitored"; }
+            elseif ($disk['source'] === null) { $disk['included'] = false; $disk['reason'] = "$type disks are not used"; }
             elseif (in_array($disk['name'], $exclude, true)) { $disk['included'] = false; $disk['reason'] = 'Excluded'; }
             $disks[] = $disk;
         }
@@ -1868,20 +1947,31 @@ function pfc_read_sources(array $cfg, array $hw, array $fans, ?array $disks = nu
     $sources = [];
     $label = fn($id) => (string)($fans['temp'][$id]['label'] ?? '');
 
-    // Array: hottest monitored, spun-up disk
+    // Disks: one source for the array, one per pool, unassigned devices and the flash drive. Each one
+    // is the hottest of its disks that are used and spun up.
     $disks = $disks ?? pfc_read_disks($cfg);
-    $included = array_filter($disks, fn($d) => $d['included']);
-    $active = array_filter($included, fn($d) => !$d['spundown']);
-    $hot = null;
-    foreach ($active as $d) if ($d['temp'] !== null && ($hot === null || $d['temp'] > $hot['temp'])) $hot = $d;
-    $src = ['id' => 'array', 'type' => 'array', 'name' => 'Array disks', 'label' => $label('array'), 'temp' => $hot['temp'] ?? null, 'state' => 'ok', 'detail' => $hot ? "hottest is {$hot['name']}" : ''];
-    if (!$included) { $src['state'] = 'error'; $src['detail'] = 'no disks are monitored'; }
-    elseif ($cfg['array']['parity_full_speed'] && pfc_parity_running()) { $src['state'] = 'parity'; $src['detail'] = 'parity check/rebuild running'; }
-    elseif (!$active) { $src['state'] = 'idle'; $src['detail'] = 'all disks spun down'; }
-    // A stopped array (e.g. an encrypted array waiting for its passphrase) has no temperatures: like spun down
-    elseif (!$hot && !pfc_array_started()) { $src['state'] = 'idle'; $src['detail'] = 'array is stopped'; }
-    elseif (!$hot) { $src['state'] = 'error'; $src['detail'] = 'no disk temperature available'; }
-    $sources['array'] = $src;
+    $bySource = [];
+    foreach ($disks as $d) if ($d['device'] !== '' && $d['source'] !== null) $bySource[$d['source']][] = $d;
+    uksort($bySource, fn($a, $b) => [pfc_disk_order($a), $a] <=> [pfc_disk_order($b), $b]);
+    $parity = null;
+    $started = null;
+    foreach ($bySource as $id => $list) {
+        $included = array_filter($list, fn($d) => $d['included']);
+        $active = array_filter($included, fn($d) => !$d['spundown']);
+        $hot = null;
+        foreach ($active as $d) if ($d['temp'] !== null && ($hot === null || $d['temp'] > $hot['temp'])) $hot = $d;
+        // Most flash drives report no temperature: only list it when it does, or when a group uses it
+        if ($id === 'flash' && !$hot && !in_array('flash', array_column(array_merge([], ...array_column($cfg['groups'], 'sources')), 'source'), true)) continue;
+        $src = ['id' => $id, 'type' => 'disk', 'name' => pfc_disk_source_name($id), 'label' => $label($id), 'temp' => $hot['temp'] ?? null, 'state' => 'ok', 'detail' => $hot ? "hottest is {$hot['name']}" : ''];
+        $inArray = $id === 'array' || strpos($id, 'pool:') === 0; // only there while the array is started
+        if (!$included) { $src['state'] = 'error'; $src['detail'] = 'all its disks are unticked'; }
+        elseif ($id === 'array' && $cfg['array']['parity_full_speed'] && ($parity ??= pfc_parity_running())) { $src['state'] = 'parity'; $src['detail'] = 'parity check/rebuild running'; }
+        elseif (!$active) { $src['state'] = 'idle'; $src['detail'] = 'all disks spun down'; }
+        // A stopped array (e.g. an encrypted array waiting for its passphrase) has no temperatures: like spun down
+        elseif (!$hot && $inArray && !($started ??= pfc_array_started())) { $src['state'] = 'idle'; $src['detail'] = 'array is stopped'; }
+        elseif (!$hot) { $src['state'] = 'error'; $src['detail'] = 'no disk temperature available'; }
+        $sources[$id] = $src;
+    }
 
     // Nvidia GPUs
     $nv = $nv ?? pfc_nvidia();
@@ -1904,6 +1994,11 @@ function pfc_read_sources(array $cfg, array $hw, array $fans, ?array $disks = nu
         ];
     }
     return $sources;
+}
+
+/** Sort order of the disk sources: array, pools, unassigned, flash. */
+function pfc_disk_order(string $id): int {
+    return strpos($id, 'pool:') === 0 ? 1 : (['array' => 0, 'unassigned' => 2, 'flash' => 3][$id] ?? 4);
 }
 
 function pfc_source_name(array $src): string {
@@ -2010,7 +2105,9 @@ function pfc_group_demand(array $group, array $sources): array {
   }
 
   const sourceById = id => state.sources.find(s => s.id === id) || null;
-  const sourceName = id => { const s = sourceById(id); return s ? (s.label || s.name) : (id === 'array' ? 'Array disks' : 'Unavailable source'); };
+  const isDisk = id => id === 'array' || id === 'unassigned' || id === 'flash' || id.indexOf('pool:') === 0;
+  const diskSourceName = id => id.indexOf('pool:') === 0 ? 'Pool: ' + id.slice(5) : ({ array: 'Array', unassigned: 'Unassigned disks', flash: 'Flash' }[id] || id);
+  const sourceName = id => { const s = sourceById(id); return s ? (s.label || s.name) : (isDisk(id) ? diskSourceName(id) : 'Unavailable source'); };
   const groupById = id => draft.groups.find(g => g.id === id) || null;
   const pwmByKey = key => state.pwm.find(p => p.key === key) || null;
   const rpmByKey = key => state.rpm.find(r => r.key === key) || null;
@@ -2019,7 +2116,8 @@ function pfc_group_demand(array $group, array $sources): array {
   const fanName = key => { const p = pwmByKey(key); return p ? (p.label || p.chip + ' PWM ' + p.index) : key; };
 
   function defaultBinding(source) {
-    if (source === 'array') return { source, low: 35, high: 48, min_pwm: 170, max_pwm: 255, idle_pwm: 170 };
+    if (source === 'array' || source === 'unassigned') return { source, low: 35, high: 48, min_pwm: 170, max_pwm: 255, idle_pwm: 170 };
+    if (isDisk(source)) return { source, low: 45, high: 65, min_pwm: 90, max_pwm: 255, idle_pwm: 90 }; // SSD/NVMe pools, flash
     if (source.indexOf('nvidia:') === 0) return { source, low: 45, high: 75, min_pwm: 90, max_pwm: 255 };
     return { source, low: 40, high: 70, min_pwm: 90, max_pwm: 255 };
   }
@@ -2152,7 +2250,7 @@ function pfc_group_demand(array $group, array $sources): array {
     const opt = s => '<option value="' + esc(s.id) + '">' + esc((s.label || s.name) + (s.temp != null ? ' (' + fmtTemp(s.temp) + ')' : '')) + '</option>';
     const avail = state.sources.filter(s => !used.has(s.id));
     const sections = [
-      ['Disks', avail.filter(s => s.type === 'array')],
+      ['Disks', avail.filter(s => s.type === 'disk')],
       ['GPUs', avail.filter(s => s.type === 'nvidia')],
       ['Sensors', avail.filter(s => s.type === 'hwmon')],
     ];
@@ -2178,9 +2276,9 @@ function pfc_group_demand(array $group, array $sources): array {
           (other ? ' <span class="pfc-muted">(' + esc(other.name) + ')</span>' : '') + '</label>';
       }).join('');
 
-      const hasArray = g.sources.some(b => b.source === 'array');
+      const hasArray = g.sources.some(b => isDisk(b.source));
       const rows = g.sources.map((b, bi) => {
-        const isArray = b.source === 'array';
+        const isArray = isDisk(b.source);
         const num = (field, val, min, max, unit) => '<input type="number" class="pfc-b-field pfc-narrow" data-b="' + bi + '" data-field="' + field + '" min="' + min + '" max="' + max + '" value="' + val + '">' + (unit || '');
         return '<tr data-b="' + bi + '">' +
           '<td><span class="pfc-swatch" style="background:' + COLORS[bi % COLORS.length] + '"></span>' + esc(sourceName(b.source)) + '</td>' +
@@ -2532,7 +2630,7 @@ function pfc_group_demand(array $group, array $sources): array {
     const sig = list.map(s => s.id + '=' + s.label).join('|');
     if (sig !== sourceSig) {
       sourceSig = sig;
-      const type = { array: 'Disks', nvidia: 'Nvidia GPU', hwmon: 'Kernel sensor' };
+      const type = { disk: 'Disks', nvidia: 'Nvidia GPU', hwmon: 'Kernel sensor' };
       $tb.html(list.map(s =>
         '<tr data-key="' + esc(s.id) + '"><td><input type="text" class="pfc-source-label" maxlength="40" placeholder="' + esc(s.name) + '"></td>' +
         '<td>' + esc(s.name) + '<br><span class="pfc-muted pfc-small">' + esc(type[s.type] || s.type) + '</span></td>' +
@@ -2551,17 +2649,17 @@ function pfc_group_demand(array $group, array $sources): array {
   function renderDisks() {
     const excluded = draft.array.exclude;
     const disks = state.disks.filter(d => d.device);
-    const arraySrc = sourceById('array');
     const $tb = $('#pfc-disk-table tbody');
     if (!disks.length) { $tb.html('<tr><td colspan="5" class="pfc-muted">No disks found.</td></tr>'); return; }
     $tb.html(disks.map(d => {
-      const typeOn = !!draft.array.include[d.type];
-      const use = typeOn && excluded.indexOf(d.name) < 0;
-      const hot = arraySrc && arraySrc.detail === 'hottest is ' + d.name;
+      const usable = !!d.source;
+      const use = usable && excluded.indexOf(d.name) < 0;
+      const src = usable ? sourceById(d.source) : null;
+      const hot = src && src.detail === 'hottest is ' + d.name;
       return '<tr class="' + (use ? '' : 'pfc-dim') + '">' +
-        '<td><input type="checkbox" class="pfc-disk-use" data-name="' + esc(d.name) + '"' + (use ? ' checked' : '') + (typeOn ? '' : ' disabled title="' + esc(d.type) + ' disks are not monitored"') + '></td>' +
-        '<td>' + esc(d.name) + (hot ? ' <i class="fa fa-fire pfc-hot" title="Hottest disk"></i>' : '') + '<br><span class="pfc-muted pfc-small">' + esc(d.device) + '</span></td>' +
-        '<td>' + esc(d.type) + '</td><td>' + (d.spundown ? 'Standby' : 'Active') + '</td>' +
+        '<td><input type="checkbox" class="pfc-disk-use" data-name="' + esc(d.name) + '"' + (use ? ' checked' : '') + (usable ? '' : ' disabled title="' + esc(d.type) + ' disks are not used"') + '></td>' +
+        '<td>' + esc(d.name) + (hot ? ' <i class="fa fa-fire pfc-hot" title="Hottest disk of ' + esc(sourceName(d.source)) + '"></i>' : '') + '<br><span class="pfc-muted pfc-small">' + esc(d.device) + '</span></td>' +
+        '<td>' + (usable ? esc(sourceName(d.source)) : '<span class="pfc-muted">-</span>') + '<br><span class="pfc-muted pfc-small">' + esc(d.type) + '</span></td><td>' + (d.spundown ? 'Standby' : 'Active') + '</td>' +
         '<td>' + (d.spundown ? 'Spun down' : esc(fmtTemp(d.temp))) + '</td></tr>';
     }).join(''));
   }
@@ -2879,12 +2977,15 @@ $stopped = false;
 if ($mode === 'identify') {
     // A fan takes longer to slow down than to speed up, so the slow step lasts until the RPM has
     // stopped falling (at least $seconds, at most PFC_SETTLE_MAX), and the change is easy to see.
-    $watch = $paired ? [$paired] : array_keys($sensors);
+    // Without a paired sensor: the sensors that dropped clearly since the start. Other fans on the chip
+    // can be changing speed at the same time (their group), they must not keep the step going.
     $history = [];
-    $settled = function (array $rpm) use (&$history, $watch, $seconds): bool {
+    $settled = function (array $rpm) use (&$history, &$state, $paired, $sensors, $seconds): bool {
         $history[] = $rpm;
         $n = count($history);
         if ($n < $seconds || $n < 4) return false;
+        $watch = $paired ? [$paired] : array_keys(array_filter($sensors, fn($s, $k) =>
+            (int)($rpm[$k] ?? 0) < 0.85 * (int)($state['before'][$k] ?? 0), ARRAY_FILTER_USE_BOTH));
         foreach ($watch as $k) {
             $now = (int)($rpm[$k] ?? 0);
             $before = (int)($history[$n - 4][$k] ?? 0);

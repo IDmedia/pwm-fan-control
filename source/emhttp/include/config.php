@@ -21,24 +21,72 @@ function pfc_default_config(): array {
         'drivers'     => '',      // kernel modules to load, e.g. "nct6775" or "it87 force_id=0x8628; nct6775"
         'identify'    => ['low_pwm' => 51, 'seconds' => 8],   // 20%: slows fans clearly without stopping them
         'array'       => [
+            // Only read when converting an older config (see pfc_migrate_disk_sources)
             'include' => ['Parity' => true, 'Data' => true, 'Cache' => true, 'Unassigned' => true, 'Flash' => false],
-            'exclude' => [],
-            'parity_full_speed' => true,
+            'exclude' => [],                // disks not used by their disk source
+            'parity_full_speed' => true,    // the Array source asks for max speed during a parity check
         ],
         'groups'      => [],
+        'disk_sources' => 2,                // 1: older configs, one "array" source for every disk
     ];
 }
 
 /** Default curve for a new source binding, depending on the kind of source. */
 function pfc_default_binding(string $source): array {
-    if ($source === 'array') return ['source' => $source, 'low' => 35, 'high' => 48, 'min_pwm' => 170, 'max_pwm' => 255, 'idle_pwm' => 170];
+    if ($source === 'array' || $source === 'unassigned') return ['source' => $source, 'low' => 35, 'high' => 48, 'min_pwm' => 170, 'max_pwm' => 255, 'idle_pwm' => 170];
+    if (pfc_is_disk_source($source)) return ['source' => $source, 'low' => 45, 'high' => 65, 'min_pwm' => 90, 'max_pwm' => 255, 'idle_pwm' => 90]; // SSD/NVMe pools, flash
     if (strpos($source, 'nvidia:') === 0) return ['source' => $source, 'low' => 45, 'high' => 75, 'min_pwm' => 90, 'max_pwm' => 255];
     return ['source' => $source, 'low' => 40, 'high' => 70, 'min_pwm' => 90, 'max_pwm' => 255];
 }
 
 function pfc_load_config(): array {
     $saved = pfc_read_json(PFC_CONFIG);
-    return is_array($saved) ? pfc_normalize_config($saved) : pfc_default_config();
+    if (!is_array($saved)) return pfc_default_config();
+    $cfg = pfc_normalize_config($saved);
+    if ($cfg['disk_sources'] < 2) {
+        // Needs Unraid's disk list to know the pools. Until emhttp has written it, the config is used as it is.
+        $disks = pfc_read_disks($cfg);
+        if ($disks) {
+            $cfg = pfc_migrate_disk_sources($cfg, $disks);
+            pfc_save_config($cfg);
+        }
+    }
+    return $cfg;
+}
+
+/**
+ * Converts a config from before the disk sources were split. The single "array" source covered every
+ * disk type ticked under "Disk types to monitor". Every group that used it now gets the Array source
+ * and a source for each pool (and unassigned/flash disks) that was ticked, all with the same curve, so
+ * the fans behave as before until the curves are changed.
+ */
+function pfc_migrate_disk_sources(array $cfg, array $disks): array {
+    $include = $cfg['array']['include'];
+    $present = [];
+    // Only sources with a disk the old source used: a pool whose disks were all unticked stays out
+    foreach ($disks as $d) if ($d['included']) $present[$d['source']] = true;
+    $wanted = [];
+    if ($include['Parity'] || $include['Data']) $wanted[] = 'array';
+    foreach (array_keys($present) as $id) {
+        if (strpos($id, 'pool:') === 0 && $include['Cache']) $wanted[] = $id;
+        if ($id === 'unassigned' && $include['Unassigned']) $wanted[] = $id;
+        if ($id === 'flash' && $include['Flash']) $wanted[] = $id;
+    }
+    if (!$wanted) $wanted = ['array'];
+    foreach ($cfg['groups'] as &$g) {
+        $new = [];
+        foreach ($g['sources'] as $b) {
+            foreach ($b['source'] === 'array' ? $wanted : [$b['source']] as $id) {
+                if (!isset($new[$id])) $new[$id] = ['source' => $id] + $b;
+            }
+        }
+        $g['sources'] = array_values($new);
+        $names = implode(', ', array_map('pfc_disk_source_name', array_filter(array_column($g['sources'], 'source'), 'pfc_is_disk_source')));
+        if ($names !== '') pfc_log("Group \"{$g['name']}\": disk temperatures are now separate sources ($names), with the curve of the former Array disks source");
+    }
+    unset($g);
+    $cfg['disk_sources'] = 2;
+    return $cfg;
 }
 
 /** Fixes types and fills in defaults, so the rest of the code can trust the structure. */
@@ -62,6 +110,7 @@ function pfc_normalize_config(array $cfg): array {
     $exclude = is_array($array['exclude'] ?? null) ? $array['exclude'] : [];
     $out['array']['exclude'] = array_values(array_unique(array_filter(array_map('strval', $exclude), 'strlen')));
     if (array_key_exists('parity_full_speed', $array)) $out['array']['parity_full_speed'] = !empty($array['parity_full_speed']);
+    $out['disk_sources'] = (int)($cfg['disk_sources'] ?? 1);
 
     foreach (is_array($cfg['groups'] ?? null) ? $cfg['groups'] : [] as $g) {
         if (!is_array($g)) continue;

@@ -131,12 +131,15 @@ $stopped = false;
 if ($mode === 'identify') {
     // A fan takes longer to slow down than to speed up, so the slow step lasts until the RPM has
     // stopped falling (at least $seconds, at most PFC_SETTLE_MAX), and the change is easy to see.
-    $watch = $paired ? [$paired] : array_keys($sensors);
+    // Without a paired sensor: the sensors that dropped clearly since the start. Other fans on the chip
+    // can be changing speed at the same time (their group), they must not keep the step going.
     $history = [];
-    $settled = function (array $rpm) use (&$history, $watch, $seconds): bool {
+    $settled = function (array $rpm) use (&$history, &$state, $paired, $sensors, $seconds): bool {
         $history[] = $rpm;
         $n = count($history);
         if ($n < $seconds || $n < 4) return false;
+        $watch = $paired ? [$paired] : array_keys(array_filter($sensors, fn($s, $k) =>
+            (int)($rpm[$k] ?? 0) < 0.85 * (int)($state['before'][$k] ?? 0), ARRAY_FILTER_USE_BOTH));
         foreach ($watch as $k) {
             $now = (int)($rpm[$k] ?? 0);
             $before = (int)($history[$n - 4][$k] ?? 0);

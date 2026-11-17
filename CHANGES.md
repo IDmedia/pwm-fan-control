@@ -1,3 +1,9 @@
+###2026.11.17b
+- Disk temperatures are now separate sources: Array (parity and data disks), one per pool, Unassigned disks and Flash, so HDD, SSD and NVMe pools can have their own curves
+- Existing groups get the Array source and a source for every pool that was monitored, with the curve of the former Array disks source, so nothing changes until you edit the curves
+- The "Disk types to monitor" setting is gone: add the disk sources you want to a group instead. Single disks can still be unticked
+- Identify without a paired RPM sensor ignores other fans on the same chip that change speed during the test
+
 ###2026.11.17a
 - Fixed: fans at full speed on nct6775 chips were reported as "changed by something else" (the driver shows manual mode at 100% as mode 0)
 - When a fan's speed keeps being changed by something else, the syslog says what was set and found, and whether the mode changed (BIOS) or only the speed (another program)

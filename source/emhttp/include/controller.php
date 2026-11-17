@@ -278,7 +278,8 @@ final class PfcController {
             $label = (string)($this->fans['temp'][$id]['label'] ?? '');
             $name = $s ? pfc_source_name($s) : ($label !== '' ? $label : $this->lastKnownName($id));
             if (!$s) {
-                $why = strpos($id, 'nvidia:') === 0 ? 'Is the Nvidia driver loaded and the GPU still installed?' : 'Is its sensor driver loaded?';
+                $why = strpos($id, 'nvidia:') === 0 ? 'Is the Nvidia driver loaded and the GPU still installed?'
+                    : (pfc_is_disk_source($id) ? 'Does it still have disks assigned? Unraid lists no disks for it.' : 'Is its sensor driver loaded?');
                 $warnings[] = "Temperature source \"$name\" of \"{$g['name']}\" was not found, its fans run at full speed. $why";
             } else {
                 $warnings[] = "Temperature source \"$name\" of \"{$g['name']}\" can't be read ({$s['detail']}), its fans run at full speed.";
@@ -288,6 +289,7 @@ final class PfcController {
 
     /** A readable name for a source that is gone: the GPU name nvidia-smi last reported, or its id. */
     private function lastKnownName(string $id): string {
+        if (pfc_is_disk_source($id)) return pfc_disk_source_name($id);
         if (strpos($id, 'nvidia:') === 0) {
             foreach (pfc_read_json(PFC_NV_CACHE, [])['gpus'] ?? [] as $gpu) {
                 if ('nvidia:' . ($gpu['uuid'] ?? '') === $id) return "GPU {$gpu['index']}: {$gpu['name']}";

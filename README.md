@@ -4,7 +4,7 @@
 
 # PWM Fan Control
 
-An Unraid plugin that controls the PWM fan headers on your motherboard based on temperatures: array disks, Nvidia
+An Unraid plugin that controls the PWM fan headers on your motherboard based on temperatures: array disks and pools, Nvidia
 GPUs, the CPU, NVMe drives or any other sensor the kernel reports.
 
 Fans are organized into groups. Each group follows one or more temperature sources, every source has its own fan
@@ -118,9 +118,11 @@ control. Disabling fan control, removing a fan from its group or removing the pl
 
 | Source | Temperature | Notes |
 |---|---|---|
-| Array disks | Hottest monitored disk that is spun up | When all monitored disks are spun down, it asks for its *All disks spun down* speed. During a parity check or rebuild, it asks for its max speed (can be turned off). |
+| Array | Hottest used parity or data disk that is spun up | When all its disks are spun down, it asks for its *All disks spun down* speed. During a parity check or rebuild, it asks for its max speed (can be turned off). |
+| Pool: *name* | The same, one source per pool | For example HDD, SSD and NVMe pools, each with its own curve. Added to a group, a pool gets SSD-like default values (45-65 °C). |
+| Unassigned disks, Flash | The same for unassigned devices and the flash drive | Only listed when Unraid reports such disks. |
 | Nvidia GPU | `nvidia-smi`, one source per GPU | GPUs are identified by their UUID, so the sources stay correct if the cards are renumbered. |
-| Kernel sensors | Everything under `/sys/class/hwmon` | CPU (`k10temp` Tctl, `coretemp`), motherboard, NVMe (`nvme` Composite) and more. `drivetemp` sensors are left out: reading them sends commands to the disks, which can keep them from spinning down. Use the array disks source for disks. |
+| Kernel sensors | Everything under `/sys/class/hwmon` | CPU (`k10temp` Tctl, `coretemp`), motherboard, NVMe (`nvme` Composite) and more. `drivetemp` sensors are left out: reading them sends commands to the disks, which can keep them from spinning down. Use the disk sources for disks. |
 
 Fans and kernel sensors are stored by chip name and device instead of `hwmonN`, so the setup keeps working when the
 hwmon numbers change after a reboot or a kernel update.
@@ -142,7 +144,7 @@ A failure makes fans run faster, never slower.
 | `nvidia-smi` hangs, for example after a GPU or driver crash | `nvidia-smi` runs in the background and is never waited on, and a run is stopped after 5 seconds. If no fresh reading arrives for 20 seconds (or 3 checks, whichever is longer), the GPU counts as unreadable. Groups that don't use the GPU keep working normally. |
 | The Nvidia driver is still loading at boot | Groups that follow a GPU run at full speed until it is ready. No alerts are sent in the first 5 minutes after boot. |
 | A GPU or sensor is gone (Nvidia driver missing after an Unraid update, sensor driver not loaded) | The groups using it run at full speed, with a warning and an alert saying which source is missing. |
-| The array is stopped (for example an encrypted array waiting for its passphrase) | The array disks source counts as spun down: its groups run at their spun-down speed, without a warning. |
+| The array is stopped (for example an encrypted array waiting for its passphrase) | The Array and Pool sources count as spun down: their groups run at their spun-down speed, without a warning. |
 | An error inside the service | Every controlled fan runs at full speed, the error is logged, and the next check tries again. |
 | The service crashes or freezes | A crash sets every controlled fan to full speed and sends an alert right away. A watchdog checks every minute and restarts the service, and sends an alert when it had to. Crash and watchdog alerts together are sent at most once an hour. A service that hasn't updated its status for 90 seconds counts as frozen. |
 | A fan in a group disappears | Warning, with the likely reason: the chip is gone (driver not loaded, ACPI conflict, see the *Hardware check*) or the chip is there but not this output (hardware or BIOS changed). The other fans keep working. |
@@ -175,7 +177,7 @@ Per group:
 | Name | Shown on the page, the dashboard tile and in log messages. |
 | Fans | The PWM outputs the group controls. A fan can only be in one group. |
 | Slow-down delay | Seconds a lower speed has to be needed before the fans slow down. 0-600, default 30. |
-| Temperature sources | One or more sources, each with *Low °C*, *High °C*, *Min speed* and *Max speed*. The array disks source also has *All disks spun down*. |
+| Temperature sources | One or more sources, each with *Low °C*, *High °C*, *Min speed* and *Max speed*. Disk sources also have *All disks spun down*. |
 
 General:
 
@@ -188,8 +190,7 @@ General:
 | Drivers to load | Fan controller drivers loaded at boot and when the settings are saved, before fan control starts. Several separated by `;`, module options allowed, for example `it87 force_id=0x8628; nct6775`. Leave empty when another plugin loads the driver. |
 | Identify: slow speed | Speed used for the slow step of *Identify*. Default 20%, which slows fans clearly without stopping them. 0% stops most fans. |
 | Identify: seconds per step | How long the slow and the full speed step of *Identify* last at least. The slow step goes on until the fan has stopped slowing down, at most 30 seconds. 3-30, default 8. |
-| Disk types to monitor | Which disk types the array disks source looks at: parity, data, pools, unassigned devices, flash. Single disks can be unticked in the disk list, for example an NVMe cache that runs hot but isn't cooled by the case fans. |
-| Full speed during parity check | Whether the array disks source asks for its max speed while a parity check or rebuild runs. |
+| Full speed during parity check | Whether the Array source asks for its max speed while a parity check or rebuild runs. Pools are not affected. |
 
 Changes to groups and settings only take effect after *Apply*. Names are saved right away.
 
@@ -204,7 +205,7 @@ Changes to groups and settings only take effect after *Apply*. Names are saved r
 - Every temperature source with its current temperature and the groups using it.
 - Per group: the fan curves with the current temperature of each source, and a chart of the last 24 hours of
   source temperatures and fan speed. History is kept in memory and starts over after a reboot.
-- The disks the array disks source looks at, with their temperature and state.
+- Every disk with the source it belongs to, its temperature and state. Untick a disk to leave it out of its source.
 - Warnings, such as unreadable sources, missing, stopped or moved fans.
 - A hardware check: the loaded fan driver, the fan outputs found, ACPI resource conflicts in the kernel log and
   whether `acpi_enforce_resources=lax` is set and needed, with what to do.

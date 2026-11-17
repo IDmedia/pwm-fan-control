@@ -53,7 +53,7 @@ function pfc_scan_hwmon(): array {
             ];
         }
 
-        // Disk temperatures come from Unraid (Array disks source). Reading drivetemp sensors directly
+        // Disk temperatures come from Unraid (the disk sources). Reading drivetemp sensors directly
         // sends commands to the disks, which can keep them from spinning down.
         if ($chip !== 'drivetemp') {
             foreach (glob("$dir/temp*_input") ?: [] as $file) {

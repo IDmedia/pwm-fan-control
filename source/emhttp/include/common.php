@@ -6,7 +6,8 @@
  *   Fan     A PWM output on a motherboard/controller chip ("<chip>@<device>/pwmN"). Keys use the chip name
  *           instead of /sys/class/hwmon/hwmonX, because the hwmonX number can change between boots.
  *   Source  Something that reports a temperature:
- *             "array"                  hottest monitored array/pool/unassigned disk
+ *             "array"                  hottest used, spun-up parity or data disk
+ *             "pool:<name>"            the same for one pool; "unassigned" and "flash" for the others
  *             "nvidia:<GPU uuid>"      an Nvidia GPU (via nvidia-smi)
  *             "hwmon:<chip>/tempN"     any kernel temperature sensor (CPU, motherboard, NVMe, ...)
  *   Group   A set of fans following one or more sources. Every source has its own curve and the

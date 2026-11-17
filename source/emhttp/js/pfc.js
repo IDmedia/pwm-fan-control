@@ -58,7 +58,9 @@
   }
 
   const sourceById = id => state.sources.find(s => s.id === id) || null;
-  const sourceName = id => { const s = sourceById(id); return s ? (s.label || s.name) : (id === 'array' ? 'Array disks' : 'Unavailable source'); };
+  const isDisk = id => id === 'array' || id === 'unassigned' || id === 'flash' || id.indexOf('pool:') === 0;
+  const diskSourceName = id => id.indexOf('pool:') === 0 ? 'Pool: ' + id.slice(5) : ({ array: 'Array', unassigned: 'Unassigned disks', flash: 'Flash' }[id] || id);
+  const sourceName = id => { const s = sourceById(id); return s ? (s.label || s.name) : (isDisk(id) ? diskSourceName(id) : 'Unavailable source'); };
   const groupById = id => draft.groups.find(g => g.id === id) || null;
   const pwmByKey = key => state.pwm.find(p => p.key === key) || null;
   const rpmByKey = key => state.rpm.find(r => r.key === key) || null;
@@ -67,7 +69,8 @@
   const fanName = key => { const p = pwmByKey(key); return p ? (p.label || p.chip + ' PWM ' + p.index) : key; };
 
   function defaultBinding(source) {
-    if (source === 'array') return { source, low: 35, high: 48, min_pwm: 170, max_pwm: 255, idle_pwm: 170 };
+    if (source === 'array' || source === 'unassigned') return { source, low: 35, high: 48, min_pwm: 170, max_pwm: 255, idle_pwm: 170 };
+    if (isDisk(source)) return { source, low: 45, high: 65, min_pwm: 90, max_pwm: 255, idle_pwm: 90 }; // SSD/NVMe pools, flash
     if (source.indexOf('nvidia:') === 0) return { source, low: 45, high: 75, min_pwm: 90, max_pwm: 255 };
     return { source, low: 40, high: 70, min_pwm: 90, max_pwm: 255 };
   }
@@ -200,7 +203,7 @@
     const opt = s => '<option value="' + esc(s.id) + '">' + esc((s.label || s.name) + (s.temp != null ? ' (' + fmtTemp(s.temp) + ')' : '')) + '</option>';
     const avail = state.sources.filter(s => !used.has(s.id));
     const sections = [
-      ['Disks', avail.filter(s => s.type === 'array')],
+      ['Disks', avail.filter(s => s.type === 'disk')],
       ['GPUs', avail.filter(s => s.type === 'nvidia')],
       ['Sensors', avail.filter(s => s.type === 'hwmon')],
     ];
@@ -226,9 +229,9 @@
           (other ? ' <span class="pfc-muted">(' + esc(other.name) + ')</span>' : '') + '</label>';
       }).join('');
 
-      const hasArray = g.sources.some(b => b.source === 'array');
+      const hasArray = g.sources.some(b => isDisk(b.source));
       const rows = g.sources.map((b, bi) => {
-        const isArray = b.source === 'array';
+        const isArray = isDisk(b.source);
         const num = (field, val, min, max, unit) => '<input type="number" class="pfc-b-field pfc-narrow" data-b="' + bi + '" data-field="' + field + '" min="' + min + '" max="' + max + '" value="' + val + '">' + (unit || '');
         return '<tr data-b="' + bi + '">' +
           '<td><span class="pfc-swatch" style="background:' + COLORS[bi % COLORS.length] + '"></span>' + esc(sourceName(b.source)) + '</td>' +
@@ -580,7 +583,7 @@
     const sig = list.map(s => s.id + '=' + s.label).join('|');
     if (sig !== sourceSig) {
       sourceSig = sig;
-      const type = { array: 'Disks', nvidia: 'Nvidia GPU', hwmon: 'Kernel sensor' };
+      const type = { disk: 'Disks', nvidia: 'Nvidia GPU', hwmon: 'Kernel sensor' };
       $tb.html(list.map(s =>
         '<tr data-key="' + esc(s.id) + '"><td><input type="text" class="pfc-source-label" maxlength="40" placeholder="' + esc(s.name) + '"></td>' +
         '<td>' + esc(s.name) + '<br><span class="pfc-muted pfc-small">' + esc(type[s.type] || s.type) + '</span></td>' +
@@ -599,17 +602,17 @@
   function renderDisks() {
     const excluded = draft.array.exclude;
     const disks = state.disks.filter(d => d.device);
-    const arraySrc = sourceById('array');
     const $tb = $('#pfc-disk-table tbody');
     if (!disks.length) { $tb.html('<tr><td colspan="5" class="pfc-muted">No disks found.</td></tr>'); return; }
     $tb.html(disks.map(d => {
-      const typeOn = !!draft.array.include[d.type];
-      const use = typeOn && excluded.indexOf(d.name) < 0;
-      const hot = arraySrc && arraySrc.detail === 'hottest is ' + d.name;
+      const usable = !!d.source;
+      const use = usable && excluded.indexOf(d.name) < 0;
+      const src = usable ? sourceById(d.source) : null;
+      const hot = src && src.detail === 'hottest is ' + d.name;
       return '<tr class="' + (use ? '' : 'pfc-dim') + '">' +
-        '<td><input type="checkbox" class="pfc-disk-use" data-name="' + esc(d.name) + '"' + (use ? ' checked' : '') + (typeOn ? '' : ' disabled title="' + esc(d.type) + ' disks are not monitored"') + '></td>' +
-        '<td>' + esc(d.name) + (hot ? ' <i class="fa fa-fire pfc-hot" title="Hottest disk"></i>' : '') + '<br><span class="pfc-muted pfc-small">' + esc(d.device) + '</span></td>' +
-        '<td>' + esc(d.type) + '</td><td>' + (d.spundown ? 'Standby' : 'Active') + '</td>' +
+        '<td><input type="checkbox" class="pfc-disk-use" data-name="' + esc(d.name) + '"' + (use ? ' checked' : '') + (usable ? '' : ' disabled title="' + esc(d.type) + ' disks are not used"') + '></td>' +
+        '<td>' + esc(d.name) + (hot ? ' <i class="fa fa-fire pfc-hot" title="Hottest disk of ' + esc(sourceName(d.source)) + '"></i>' : '') + '<br><span class="pfc-muted pfc-small">' + esc(d.device) + '</span></td>' +
+        '<td>' + (usable ? esc(sourceName(d.source)) : '<span class="pfc-muted">-</span>') + '<br><span class="pfc-muted pfc-small">' + esc(d.type) + '</span></td><td>' + (d.spundown ? 'Standby' : 'Active') + '</td>' +
         '<td>' + (d.spundown ? 'Spun down' : esc(fmtTemp(d.temp))) + '</td></tr>';
     }).join(''));
   }
