@@ -310,8 +310,9 @@ final class PfcController {
     private function checkConflict(array $fan, string $name, array &$warnings): void {
         $key = $fan['key'];
         if (!isset($this->written[$key])) return;
-        [$pwm, $enable] = $this->written[$key];
-        $changed = ($fan['value'] !== null && abs($fan['value'] - $pwm) > 5) || ($fan['enable'] !== null && $fan['enable'] !== $enable);
+        [$pwm] = $this->written[$key];
+        $modeChanged = !pfc_is_manual($fan['enable'], $pwm);
+        $changed = ($fan['value'] !== null && abs($fan['value'] - $pwm) > 5) || $modeChanged;
         $this->conflicts[$key] = $changed ? ($this->conflicts[$key] ?? 0) + 1 : 0;
         if ($this->conflicts[$key] === self::CONFLICT_TICKS) {
             // Once per episode, what exactly changed: tells another program (speed changed, mode still
@@ -319,7 +320,7 @@ final class PfcController {
             $mode = fn($e) => $e === null ? 'no mode' : ($e === 1 ? 'manual mode (1)' : ($e === 0 ? 'mode 0 (full speed)' : "automatic mode ($e)"));
             $found = ($fan['value'] ?? '?') . ' in ' . $mode($fan['enable']);
             pfc_log("Fan \"$name\" ({$fan['path']}): set to $pwm in manual mode, but found $found. "
-                . ($fan['enable'] !== null && $fan['enable'] !== $enable
+                . ($modeChanged
                     ? 'The mode was changed: the BIOS, the chip or another program took the fan back.'
                     : 'The speed was changed while in manual mode: another program writes to this fan.'));
         }

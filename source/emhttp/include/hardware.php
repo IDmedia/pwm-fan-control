@@ -192,13 +192,21 @@ function pfc_expected_rpm(array $points, int $pwm): ?float {
 }
 
 /**
+ * Whether an output in mode $enable is under manual control at speed $pwm. The nct6775 driver reports
+ * manual mode at 255 as mode 0 ("full speed"), so that counts as manual too.
+ */
+function pfc_is_manual(?int $enable, int $pwm): bool {
+    return $enable === null || $enable === 1 || ($enable === 0 && $pwm === 255);
+}
+
+/**
  * Switches an output to manual control and sets its speed.
  * Remembers the BIOS mode in $fans the first time (returns $changed = true then).
  * Returns null on success, or an error message.
  */
 function pfc_drive_fan(array &$fans, array $fan, int $pwm, bool &$changed): ?string {
     $key = $fan['key'];
-    if ($fan['enable'] !== null && $fan['enable'] !== 1) {
+    if (!pfc_is_manual($fan['enable'], $pwm)) {
         if (!isset($fans['pwm'][$key]['orig_enable'])) {
             $fans['pwm'][$key]['orig_enable'] = (string)$fan['enable'];
             $changed = true;
