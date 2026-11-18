@@ -13,6 +13,8 @@ group following the disks, and a *GPU fans* group following the GPUs and the CPU
 find out which header drives which fan, lets you name them, and shows the fan curves and the last 24 hours of
 temperatures and fan speeds.
 
+![The settings page with an Array fans group following the array and a pool, each with its own curve, and the last 24 hours of fan speed and temperatures](docs/settings-page.png)
+
 Problems? Run `grep pwm.fan.control /var/log/syslog` and include the output in your report.
 
 ## Requirements
@@ -79,7 +81,8 @@ jumping between their speeds.
    setting, a source can't be read, or a parity check runs. Fans in no group aren't checked, so test those only
    when nothing they cool is hot.
 4. **Create groups.** Under *Fan groups*, click *Add group*, tick the fans that belong to it and add one or more
-   temperature sources. A fan can only be in one group.
+   temperature sources. A fan can only be in one group. Only named fans are offered, so name them first; *Show
+   unnamed outputs* lists the rest.
 5. **Adjust the curves.** The chart next to each group updates while you type, and a dot shows where each source
    is right now. If a group's min speed is below the speed one of its fans needs to start (from the speed test),
    the group shows a warning: below that speed the fan may stop and not start again until the speed goes up.
@@ -175,7 +178,7 @@ Per group:
 | Setting | Meaning |
 |---|---|
 | Name | Shown on the page, the dashboard tile and in log messages. |
-| Fans | The PWM outputs the group controls. A fan can only be in one group. |
+| Fans | The PWM outputs the group controls. A fan can only be in one group. Only named outputs are listed, *Show unnamed outputs* adds the others. |
 | Slow-down delay | Seconds a lower speed has to be needed before the fans slow down. 0-600, default 30. |
 | Temperature sources | One or more sources, each with *Low °C*, *High °C*, *Min speed* and *Max speed*. Disk sources also have *All disks spun down*. |
 

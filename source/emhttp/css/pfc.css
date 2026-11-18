@@ -88,3 +88,4 @@
 #pfc .pfc-fantest-body .pfc-fantest-table { flex: 1 1 380px; }
 #pfc .pfc-speed-chart { flex: 1 1 380px; max-width: 560px; }
 #pfc .pfc-marker { stroke: var(--pfc-accent); stroke-dasharray: 4 4; }
+#pfc .pfc-toggle-unnamed { align-self: center; margin-left: 4px; }

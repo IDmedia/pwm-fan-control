@@ -13,6 +13,7 @@
   let dirty = false;
   let history = [];
   let groupsBuilt = false;
+  let showUnnamed = false; // group editor: also offer outputs without a name
   let pwmSig = '';
   let rpmSig = '';
   let sourceSig = '';
@@ -217,9 +218,11 @@
     draft.groups.forEach(g => g.fans.forEach(f => { owner[f] = g; }));
 
     const html = draft.groups.map((g, gi) => {
-      const fanKeys = state.pwm.map(p => p.key);
+      // Only named outputs are offered (plus the group's own fans), unnamed ones are usually empty headers
+      const unnamed = state.pwm.filter(p => !p.label && g.fans.indexOf(p.key) < 0).map(p => p.key);
+      const fanKeys = state.pwm.map(p => p.key).filter(k => showUnnamed || unnamed.indexOf(k) < 0);
       g.fans.forEach(k => { if (fanKeys.indexOf(k) < 0) fanKeys.push(k); }); // missing fans stay visible
-      const fans = fanKeys.map(k => {
+      let fans = fanKeys.map(k => {
         const other = owner[k] && owner[k] !== g ? owner[k] : null;
         const p = pwmByKey(k);
         return '<label class="pfc-chip' + (g.fans.indexOf(k) >= 0 ? ' pfc-chip-on' : '') + (other ? ' pfc-chip-off' : '') + '"' +
@@ -228,6 +231,11 @@
           esc(fanName(k)) + (p ? '' : ' <i class="fa fa-exclamation-triangle" title="Not found"></i>') +
           (other ? ' <span class="pfc-muted">(' + esc(other.name) + ')</span>' : '') + '</label>';
       }).join('');
+      if (!fans && unnamed.length) fans = '<span class="pfc-muted">No named fans yet. Name your fans in the Fans section below, then pick them here.</span>';
+      if (unnamed.length) {
+        fans += '<a href="#" class="pfc-toggle-unnamed pfc-small">' + (showUnnamed ? 'Hide unnamed outputs' :
+          'Show ' + unnamed.length + ' unnamed output' + (unnamed.length === 1 ? '' : 's')) + '</a>';
+      }
 
       const hasArray = g.sources.some(b => isDisk(b.source));
       const rows = g.sources.map((b, bi) => {
@@ -723,7 +731,7 @@
           .then(() => { if (after) after(); });
       });
   }
-  labelSaver('.pfc-label', 'save_fan', () => { if (!dirty) return; buildGroups(); updateGroups(); });
+  labelSaver('.pfc-label', 'save_fan', () => { buildGroups(); updateGroups(); });
   labelSaver('.pfc-rpm-label', 'save_rpm_label');
   labelSaver('.pfc-source-label', 'save_source_label', () => { buildGroups(); updateGroups(); });
 
@@ -743,6 +751,7 @@
     .on('click', '#pfc-fantest-close', () => { testDismissed = state.fantest.time; renderFanTest(); });
 
   $('#pfc-show-all-sensors').on('change', () => { sourceSig = ''; renderSources(); });
+  $(root).on('click', '.pfc-toggle-unnamed', e => { e.preventDefault(); showUnnamed = !showUnnamed; buildGroups(); updateGroups(); });
 
   window.addEventListener('beforeunload', e => { if (dirty) { e.preventDefault(); e.returnValue = ''; } });
 

@@ -1,3 +1,7 @@
+###2026.11.18
+- The group editor only offers named fans (and the fans already in the group). Unnamed outputs, usually empty headers, are behind a "Show unnamed outputs" link
+- A fan that gets a name shows up in the group editor right away
+
 ###2026.11.17b
 - Disk temperatures are now separate sources: Array (parity and data disks), one per pool, Unassigned disks and Flash, so HDD, SSD and NVMe pools can have their own curves
 - Existing groups get the Array source and a source for every pool that was monitored, with the curve of the former Array disks source, so nothing changes until you edit the curves
