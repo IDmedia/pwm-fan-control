@@ -66,6 +66,8 @@ jumping between their speeds.
 
 ## Setting up
 
+![The Fans section: every PWM output with its name, speed, current setting, paired RPM sensor and group, and the result of a speed test that shows the fan stops below 10% and starts again at 10%](docs/fans-speed-test.jpg)
+
 1. **Identify your fans.** Under *Fans*, click *Identify* next to an output. The fan connected to it slows down
    (to 20% by default, so it doesn't stop), then runs at full speed, then goes back to how it was. The page shows the live RPM of every
    fan sensor on that chip, so you can see, hear and read which fan it is. The RPM sensor that reacts is paired
@@ -221,6 +223,9 @@ of warnings.
 - **No fans listed:** the sensor driver isn't loaded, or can't use the chip. The *Hardware check* at the bottom of the
   page says which: enter the driver under *Drivers to load* (or let *Dynamix System Temperature* detect it), and add
   `acpi_enforce_resources=lax` to the boot line if the kernel log shows an ACPI resource conflict.
+
+  ![The Hardware check: the nct6775 driver is loaded, 7 fan outputs found, no ACPI resource conflicts, acpi_enforce_resources=lax set](docs/hardware-check.png)
+
 - **"Fan ... runs much faster/slower than in its speed test":** fans were probably moved to other headers. Check
   which fan each header drives with *Identify*, fix the names and groups, then run the speed test again. If it's
   the same fan, it may be worn or blocked.
