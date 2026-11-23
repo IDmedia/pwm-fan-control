@@ -288,4 +288,9 @@ temperature source should be listed with live values. Run *Identify* on each out
 create a group, enable fan control and watch the speed follow the curve. Unplugging a paired fan for half a minute
 should show the *not spinning* warning. Disabling fan control should put every fan back to its BIOS mode.
 
+## License
+
+[MIT](LICENSE): free to use, change and share. When you share it, keep the copyright notice from the
+[LICENSE](LICENSE) file, which credits the author and links back to this repository.
+
 This project is not affiliated with Unraid or Nvidia.
