@@ -1,3 +1,6 @@
+###2026.11.23
+- Notifications show which server they come from: the title is "PWM Fan Control - <server>" and the subject starts with "[<SERVER>]", like Unraid's own notifications
+
 ###2026.11.18
 - The group editor only offers named fans (and the fans already in the group). Unnamed outputs, usually empty headers, are behind a "Show unnamed outputs" link
 - A fan that gets a name shows up in the group editor right away

@@ -100,13 +100,26 @@ function pfc_log(string $msg): void {
     exec('logger -t ' . escapeshellarg(PFC_NAME) . ' ' . escapeshellarg($msg));
 }
 
+/** The server name set in Settings / Identification, or the host name. */
+function pfc_server_name(): string {
+    $var = @parse_ini_file(PFC_EMHTTP . '/var.ini');
+    $name = trim((string)($var['NAME'] ?? ''));
+    return $name !== '' ? $name : (string)gethostname();
+}
+
 /**
  * Unraid notification, if enabled in the settings. $level: normal|warning|alert.
  * Problems are sent as "alert" (shown in red), resolved problems as "normal".
+ * The server name is in the title and the subject (like Unraid's own notifications), so it shows on every agent:
+ *   PWM Fan Control - Kaya
+ *   [KAYA] PWM Fan Control: Fan problem
  */
 function pfc_notify(string $subject, string $description, string $level = 'alert'): void {
     if (!is_executable(PFC_NOTIFY) || !pfc_load_config()['notify']) return;
-    exec(escapeshellarg(PFC_NOTIFY) . ' -e ' . escapeshellarg('PWM Fan Control') . ' -s ' . escapeshellarg("PWM Fan Control: $subject")
+    $server = pfc_server_name();
+    $event = $server !== '' ? "PWM Fan Control - $server" : 'PWM Fan Control';
+    $tag = $server !== '' ? '[' . strtoupper($server) . '] ' : '';
+    exec(escapeshellarg(PFC_NOTIFY) . ' -e ' . escapeshellarg($event) . ' -s ' . escapeshellarg("{$tag}PWM Fan Control: $subject")
         . ' -d ' . escapeshellarg($description) . ' -i ' . escapeshellarg($level) . ' >/dev/null 2>&1');
 }
 
