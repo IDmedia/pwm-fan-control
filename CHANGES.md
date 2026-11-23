@@ -1,5 +1,7 @@
 ###2026.11.23
 - Notifications show which server they come from: the title is "PWM Fan Control - <server>" and the subject starts with "[<SERVER>]", like Unraid's own notifications
+- Fixed: when spun-down disks spin up, Unraid can take several minutes to show their temperature. This no longer counts as a fan problem: for up to 10 minutes the fans run at the lowest speed of the curve (at least the spun-down speed), then at full speed with an alert as before
+- "Problem resolved" notifications say the problem is gone instead of only repeating its text
 
 ###2026.11.18
 - The group editor only offers named fans (and the fans already in the group). Unnamed outputs, usually empty headers, are behind a "Show unnamed outputs" link

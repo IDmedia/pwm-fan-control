@@ -88,6 +88,7 @@
     if (!s || s.state === 'error') return 255;
     if (s.state === 'parity') return b.max_pwm;
     if (s.state === 'idle') return b.idle_pwm != null ? b.idle_pwm : b.min_pwm;
+    if (s.state === 'waiting') return Math.max(b.min_pwm, b.idle_pwm != null ? b.idle_pwm : b.min_pwm);
     return curvePwm(s.temp, b);
   }
 

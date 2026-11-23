@@ -4,7 +4,8 @@
  *
  * A source, as returned by pfc_read_sources():
  *   ['id', 'type' => disk|nvidia|hwmon, 'name' (default name), 'label' (user name), 'temp' => ?float,
- *    'state' => ok|idle|parity|error, 'detail' => string]
+ *    'state' => ok|idle|waiting|parity|error, 'detail' => string]
+ * "waiting" is only set by the service: disks that just spun up and have no temperature yet.
  */
 
 /**
@@ -178,7 +179,9 @@ function pfc_read_sources(array $cfg, array $hw, array $fans, ?array $disks = nu
         elseif (!$active) { $src['state'] = 'idle'; $src['detail'] = 'all disks spun down'; }
         // A stopped array (e.g. an encrypted array waiting for its passphrase) has no temperatures: like spun down
         elseif (!$hot && $inArray && !($started ??= pfc_array_started())) { $src['state'] = 'idle'; $src['detail'] = 'array is stopped'; }
-        elseif (!$hot) { $src['state'] = 'error'; $src['detail'] = 'no disk temperature available'; }
+        // Disks spun up without a temperature. Right after a spin-up this is normal: Unraid can take minutes to
+        // fill in the temperature. The service (PfcController) tolerates it for a while when the source was idle.
+        elseif (!$hot) { $src['state'] = 'error'; $src['detail'] = 'no disk temperature available'; $src['no_temp'] = true; }
         $sources[$id] = $src;
     }
 
@@ -231,6 +234,8 @@ function pfc_binding_demand(array $b, ?array $src): array {
         case 'error':  return ['pwm' => PFC_FAILSAFE_PWM, 'reason' => "$name: {$src['detail']}, running at full speed"];
         case 'parity': return ['pwm' => (int)$b['max_pwm'], 'reason' => "$name: {$src['detail']}"];
         case 'idle':   return ['pwm' => (int)($b['idle_pwm'] ?? $b['min_pwm']), 'reason' => "$name: {$src['detail']}"];
+        // Just spun up, no temperature yet: the disks were cold, so the lowest curve speed (at least the spun-down speed)
+        case 'waiting': return ['pwm' => max((int)$b['min_pwm'], (int)($b['idle_pwm'] ?? $b['min_pwm'])), 'reason' => "$name: {$src['detail']}"];
     }
     return ['pwm' => pfc_curve_pwm($src['temp'], $b), 'reason' => "$name at " . pfc_fmt_temp($src['temp'])];
 }

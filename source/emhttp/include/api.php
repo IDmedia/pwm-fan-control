@@ -44,6 +44,15 @@ case 'state':
     $disks = pfc_read_disks($cfg);
     $nv = pfc_nvidia();
     $sources = pfc_read_sources($cfg, $hw, $fans, $disks, $nv);
+    $status = pfc_live_status();
+
+    // Disks that just spun up: only the service knows how long they have been waiting for a temperature
+    foreach ($status['sources'] ?? [] as $id => $s) {
+        if (($s['state'] ?? '') === 'waiting' && !empty($sources[$id]['no_temp'])) {
+            $sources[$id]['state'] = 'waiting';
+            $sources[$id]['detail'] = $s['detail'];
+        }
+    }
 
     // Groups as they would run right now, without the slow-down delay
     $preview = [];
@@ -55,7 +64,7 @@ case 'state':
         'config'     => $cfg,
         'errors'     => pfc_validate_config($cfg),
         'running'    => pfc_daemon_pid() !== null,
-        'status'     => pfc_live_status(),
+        'status'     => $status,
         'pwm'        => pfc_fan_list($cfg, $fans, $hw),
         'hardware'   => ($check = pfc_hardware_check($hw)) + ['hint' => pfc_hardware_hint($check)],
         'rpm'        => pfc_rpm_list($fans, $hw),

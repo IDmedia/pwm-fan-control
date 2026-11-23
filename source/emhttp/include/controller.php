@@ -9,6 +9,7 @@
  *
  * Safety rules
  *   - A source that can't be read on two checks in a row makes its groups run at full speed.
+ *     Exception: disks that just spun up get SPINUP_GRACE seconds for Unraid to read their temperature.
  *   - An error in the loop itself sets every controlled fan to full speed and is retried next check.
  *   - A crash of the service leaves the fans at full speed until the watchdog restarts it.
  *   - Only a deliberate stop (disabled, removed, signal) hands the fans back to the BIOS.
@@ -24,6 +25,7 @@
  */
 final class PfcController {
     private const SOURCE_RETRIES = 1;     // failed reads of a source tolerated before full speed
+    private const SPINUP_GRACE   = 600;   // disks that spun up may go this long without a temperature (Unraid can take minutes)
     private const STALL_SECONDS  = 20;    // 0 RPM for this long while it should spin = stalled
     private const STALL_MIN_PWM  = 77;    // 30%: below this, without a speed test, 0 RPM may be normal
     private const SETTLE_SECONDS = 15;    // time a fan needs to reach its speed after a change
@@ -46,6 +48,7 @@ final class PfcController {
     private array $logged = [];       // group id => last logged pwm
     private array $lastGood = [];     // source id => last good reading
     private array $failures = [];     // source id => failed reads in a row
+    private array $waitSince = [];    // disk source id => time its spun-up disks were first seen without a temperature, false = no grace
     private array $written = [];      // fan key => [pwm we set, enable we set]
     private array $conflicts = [];    // fan key => checks in a row changed by someone else
     private array $zeroSince = [];    // fan key => time it was first seen at 0 RPM while it should spin
@@ -91,7 +94,7 @@ final class PfcController {
         $cfg = $this->cfg;
         $hw = pfc_scan_hwmon();
         $nv = pfc_uses_nvidia($cfg) ? pfc_nvidia(max(20, 3 * $cfg['interval'])) : ['available' => false, 'error' => null, 'gpus' => []];
-        $sources = $this->withRetries(pfc_read_sources($cfg, $hw, $this->fans, null, $nv));
+        $sources = $this->withRetries(pfc_read_sources($cfg, $hw, $this->fans, null, $nv), $now);
         $test = pfc_fantest_running();
 
         $warnings = $nv['error'] ? [$nv['error']] : [];
@@ -178,9 +181,26 @@ final class PfcController {
     /**
      * A single failed read (a sensor glitch, nvidia-smi failing once) uses the previous reading,
      * so it doesn't send the fans to full speed for the whole slow-down delay.
+     *
+     * Disks that spun up have no temperature until Unraid reads it, which can take minutes. When the
+     * source was idle (or the service just started), that is "waiting" for up to SPINUP_GRACE seconds
+     * instead of an error. A source that had a temperature and lost it gets no grace.
      */
-    private function withRetries(array $sources): array {
+    private function withRetries(array $sources, int $now): array {
         foreach ($sources as $id => $s) {
+            if (empty($s['no_temp'])) {
+                unset($this->waitSince[$id]);
+            } else {
+                if (!isset($this->waitSince[$id])) {
+                    $prev = $this->lastGood[$id] ?? null;
+                    $this->waitSince[$id] = ($prev === null || $prev['state'] === 'idle') ? $now : false;
+                }
+                $since = $this->waitSince[$id];
+                if ($since !== false && $now - $since < self::SPINUP_GRACE) {
+                    $sources[$id] = ['state' => 'waiting', 'detail' => 'disks spun up, waiting for Unraid to read their temperature'] + $s;
+                    continue;
+                }
+            }
             if ($s['state'] !== 'error') {
                 $this->failures[$id] = 0;
                 $this->lastGood[$id] = $s;
@@ -430,7 +450,7 @@ final class PfcController {
             if (in_array($w, $warnings, true)) continue;
             if ($e['gone'] === null) { $a['active'][$w]['gone'] = $now; continue; }
             if ($now - $e['gone'] < self::RESOLVE_SECONDS) continue;
-            if ($e['alerted']) pfc_notify('Problem resolved', $w, 'normal');
+            if ($e['alerted']) pfc_notify('Problem resolved', "Back to normal. The problem was: $w", 'normal');
             pfc_log("Resolved: $w");
             unset($a['active'][$w]);
         }
