@@ -26,6 +26,25 @@ cdata() {
     printf ']]>'
 }
 
+# Prints a file as XML text (& < > escaped), with Windows line endings removed
+xmltext() {
+    tr -d '\r' < "$1" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'
+}
+
+# Fails the build when the .plg is not valid XML (Unraid only says "xml parse error" when installing)
+check_xml() {
+    local py="" p
+    if command -v xmllint > /dev/null; then
+        xmllint --noout "$1" && return
+    else
+        for p in python3 python; do "$p" -c pass > /dev/null 2>&1 && { py="$p"; break; }; done
+        if [ -z "$py" ]; then echo "Warning: no xmllint or python, $1 was not checked." >&2; return; fi
+        "$py" -I -c 'import sys, xml.etree.ElementTree as ET; ET.parse(sys.argv[1])' "$1" && return
+    fi
+    echo "Error: $1 is not valid XML." >&2
+    exit 1
+}
+
 {
 cat << EOF
 <?xml version='1.0' standalone='yes'?>
@@ -39,7 +58,7 @@ cat << EOF
 <PLUGIN name="&name;" author="&author;" version="&version;" pluginURL="&pluginURL;" min="7.4.0" icon="icon-fan" launch="Settings/PWMFanControl">
 
 <CHANGES>
-$(tr -d '\r' < "$HERE/CHANGES.md")
+$(xmltext "$HERE/CHANGES.md")
 </CHANGES>
 
 <!-- Remove files from a previous version -->
@@ -69,4 +88,5 @@ printf '</INLINE>\n</FILE>\n\n'
 echo '</PLUGIN>'
 } > "$OUT"
 
+check_xml "$OUT"
 echo "Built $OUT (version $VERSION)"
