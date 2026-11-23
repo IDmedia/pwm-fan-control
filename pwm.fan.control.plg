@@ -6,7 +6,7 @@
 <!ENTITY pluginURL "https://raw.githubusercontent.com/IDmedia/pwm-fan-control/main/pwm.fan.control.plg">
 <!ENTITY emhttp    "/usr/local/emhttp/plugins/&name;">
 ]>
-<PLUGIN name="&name;" author="&author;" version="&version;" pluginURL="&pluginURL;" min="7.4.0" icon="icon-fan" launch="Settings/PWMFanControl">
+<PLUGIN name="&name;" author="&author;" version="&version;" pluginURL="&pluginURL;" min="7.4.0" support="https://github.com/IDmedia/pwm-fan-control/issues" icon="icon-fan" launch="Settings/PWMFanControl">
 
 <CHANGES>
 ###2026.11.23

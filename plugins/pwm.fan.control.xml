@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Community Applications listing for PWM Fan Control (https://ca.unraid.net/submit/help/xml-field-reference).
+  PluginURL, MinVer and Support must match the pluginURL, min and support attributes of pwm.fan.control.plg
+  (set in build.sh). The plugin itself is the .plg in the repository root; this file is only the listing.
+-->
+<Plugin>
+  <Name>PWM Fan Control</Name>
+  <PluginURL>https://raw.githubusercontent.com/IDmedia/pwm-fan-control/main/pwm.fan.control.plg</PluginURL>
+  <PluginAuthor>IDmedia</PluginAuthor>
+  <Support>https://github.com/IDmedia/pwm-fan-control/issues</Support>
+  <Project>https://github.com/IDmedia/pwm-fan-control</Project>
+  <ReadMe>https://raw.githubusercontent.com/IDmedia/pwm-fan-control/main/README.md</ReadMe>
+  <Overview>
+    Controls the PWM fan headers on your motherboard based on temperatures: array disks and pools, Nvidia GPUs, the CPU, NVMe drives or any other sensor the kernel reports.
+
+    Fans are organized into groups. Each group follows one or more temperature sources, every source has its own fan curve, and the group runs at the highest speed any of its sources asks for. A typical setup has an Array fans group following the disks and a GPU fans group following the GPUs and the CPU. Spun-down disks get their own speed, and a parity check can run the fans at full speed.
+
+    The settings page (Settings, Utilities, PWM Fan Control) helps you find out which header drives which fan, runs a speed test, lets you name fans and sensors, and shows the fan curves and the last 24 hours of temperatures and fan speeds. A background service with a watchdog checks every few seconds. When a temperature can't be read or the service fails, the fans run at full speed, and Unraid notifications report stalled fans, fans changed by other programs and sensors that disappear.
+
+    Fan control is off after installing: until you enable it, the plugin only reads sensors. Requirements: Unraid 7.4 or newer, a motherboard sensor chip whose driver exposes PWM outputs (for example nct6775 or it87), and the fan headers set to PWM mode in the BIOS. Remove other fan control first, such as Dynamix Auto Fan Control. Not affiliated with Unraid or Nvidia.
+  </Overview>
+  <Category>Tools:System</Category>
+  <Icon>https://raw.githubusercontent.com/IDmedia/pwm-fan-control/main/docs/logo.png</Icon>
+  <Screenshot>https://raw.githubusercontent.com/IDmedia/pwm-fan-control/main/docs/settings-page.png</Screenshot>
+  <License>MIT</License>
+  <MinVer>7.4.0</MinVer>
+  <ExtraSearchTerms>fan fans pwm speed curve temperature cooling nct6775 it87 hwmon disk gpu nvidia cpu</ExtraSearchTerms>
+  <Changes>
+    See https://github.com/IDmedia/pwm-fan-control/blob/main/CHANGES.md. The plugin manager shows the changes of each version.
+  </Changes>
+</Plugin>

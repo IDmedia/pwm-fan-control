@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Community Applications repository profile (https://ca.unraid.net/submit/help/xml-field-reference).
+  CA requires this file in the repository root with a non-empty Profile. The listing is plugins/pwm.fan.control.xml.
+-->
+<CommunityApplications>
+  <Profile>Unraid plugins by IDmedia. This repository holds PWM Fan Control, a plugin that controls the PWM fan headers on the motherboard based on the temperatures of array disks and pools, Nvidia GPUs, the CPU and other kernel sensors, with fan groups, a curve per temperature source, fan identification and speed tests, and 24 hour history charts. MIT licensed. Support: the GitHub issues of the repository.</Profile>
+  <Icon>https://raw.githubusercontent.com/IDmedia/pwm-fan-control/main/docs/logo.png</Icon>
+  <WebPage>https://github.com/IDmedia/pwm-fan-control</WebPage>
+</CommunityApplications>

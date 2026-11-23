@@ -55,7 +55,7 @@ cat << EOF
 <!ENTITY pluginURL "$PLUGIN_URL">
 <!ENTITY emhttp    "/usr/local/emhttp/plugins/&name;">
 ]>
-<PLUGIN name="&name;" author="&author;" version="&version;" pluginURL="&pluginURL;" min="7.4.0" icon="icon-fan" launch="Settings/PWMFanControl">
+<PLUGIN name="&name;" author="&author;" version="&version;" pluginURL="&pluginURL;" min="7.4.0" support="https://github.com/IDmedia/pwm-fan-control/issues" icon="icon-fan" launch="Settings/PWMFanControl">
 
 <CHANGES>
 $(xmltext "$HERE/CHANGES.md")
