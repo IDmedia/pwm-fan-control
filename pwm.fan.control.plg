@@ -2,13 +2,19 @@
 <!DOCTYPE PLUGIN [
 <!ENTITY name      "pwm.fan.control">
 <!ENTITY author    "IDmedia">
-<!ENTITY version   "2026.11.23">
+<!ENTITY version   "2026.11.25">
 <!ENTITY pluginURL "https://raw.githubusercontent.com/IDmedia/pwm-fan-control/main/pwm.fan.control.plg">
 <!ENTITY emhttp    "/usr/local/emhttp/plugins/&name;">
 ]>
 <PLUGIN name="&name;" author="&author;" version="&version;" pluginURL="&pluginURL;" min="7.4.0" support="https://github.com/IDmedia/pwm-fan-control/issues" icon="icon-fan" launch="Settings/PWMFanControl">
 
 <CHANGES>
+###2026.11.25
+- Fixed: with fan control disabled, clicking Apply (or booting) could set fans in a group to full speed. Fans are now only touched while fan control is enabled
+- When fan control is disabled, a fan is removed from its group or the plugin is removed, the fans it controlled are left at full speed instead of being handed back to the BIOS, so no fan can be stuck at a low speed. A reboot gives them back to the BIOS. The syslog lists each fan
+- A fan test running on such a fan is stopped first, so it can't put back a low speed afterwards
+- A service that hangs when stopped is killed after 10 seconds, and the fans of all groups are set to full speed
+
 ###2026.11.23
 - Notifications show which server they come from: the title is "PWM Fan Control - &lt;server&gt;" and the subject starts with "[&lt;SERVER&gt;]", like Unraid's own notifications
 - Fixed: when spun-down disks spin up, Unraid can take several minutes to show their temperature. This no longer counts as a fan problem: for up to 10 minutes the fans run at the lowest speed of the curve (at least the spun-down speed), then at full speed with an alert as before
@@ -551,8 +557,7 @@ case 'fantest':
     pfc_reply(['ok' => true]);
 
 case 'fantest_stop':
-    @mkdir(PFC_RUN, 0777, true);
-    touch(PFC_STOP_FLAG);
+    pfc_fantest_stop();
     pfc_reply(['ok' => true]);
 
 default:
@@ -967,7 +972,7 @@ function pfc_migrate_old(): bool {
     $fans = ['pwm' => [], 'rpm' => is_array($old_fans['rpm'] ?? null) ? $old_fans['rpm'] : [], 'temp' => []];
     $controlled = [];
     foreach (is_array($old_fans['pwm'] ?? null) ? $old_fans['pwm'] : [] as $key => $f) {
-        $fans['pwm'][$key] = array_intersect_key((array)$f, ['label' => 1, 'rpm' => 1, 'orig_enable' => 1]);
+        $fans['pwm'][$key] = array_intersect_key((array)$f, ['label' => 1, 'rpm' => 1]);
         if (!empty($f['controlled'])) $controlled[] = $key;
     }
     $cfg['groups'][] = [
@@ -999,7 +1004,10 @@ function pfc_migrate_old(): bool {
  *     Exception: disks that just spun up get SPINUP_GRACE seconds for Unraid to read their temperature.
  *   - An error in the loop itself sets every controlled fan to full speed and is retried next check.
  *   - A crash of the service leaves the fans at full speed until the watchdog restarts it.
- *   - Only a deliberate stop (disabled, removed, signal) hands the fans back to the BIOS.
+ *   - When the service stops (disabled, removed, signal) or a fan leaves its group, the fans it drove are
+ *     left at full speed (pfc_release_fans): nothing controls them anymore, so they must not stay at a
+ *     low speed. A reboot gives them back to the BIOS.
+ *   - Fans are only touched while fan control is enabled. Which fans were driven is only kept in memory.
  *
  * It also watches for problems and reports them as warnings (status page, syslog, Unraid alert
  * notifications):
@@ -1036,6 +1044,7 @@ final class PfcController {
     private array $lastGood = [];     // source id => last good reading
     private array $failures = [];     // source id => failed reads in a row
     private array $waitSince = [];    // disk source id => time its spun-up disks were first seen without a temperature, false = no grace
+    private array $driven = [];       // fan key => true: fans this service has set, released at full speed when it stops
     private array $written = [];      // fan key => [pwm we set, enable we set]
     private array $conflicts = [];    // fan key => checks in a row changed by someone else
     private array $zeroSince = [];    // fan key => time it was first seen at 0 RPM while it should spin
@@ -1052,7 +1061,7 @@ final class PfcController {
         $this->alerts = self::loadAlerts();
     }
 
-    /** Runs until stopped or disabled, then hands the fans back to the BIOS. */
+    /** Runs until stopped or disabled, then leaves the fans it drove at full speed. */
     public function run(): void {
         pfc_log('Started');
         while ($this->running) {
@@ -1067,9 +1076,9 @@ final class PfcController {
             // Sleep until the next check, waking up regularly to notice a stop signal
             while ($this->running && microtime(true) < $until) usleep((int)min(250000, max(1000, ($until - microtime(true)) * 1e6)));
         }
-        pfc_release_all($this->cfg);
+        pfc_release_fans(array_keys($this->driven));
         @unlink(PFC_STATUS);
-        pfc_log('Stopped, fans handed back to the BIOS');
+        pfc_log('Stopped');
     }
 
     /** One check. Returns false when fan control was disabled. */
@@ -1085,12 +1094,10 @@ final class PfcController {
         $test = pfc_fantest_running();
 
         $warnings = $nv['error'] ? [$nv['error']] : [];
-        $fansChanged = false;
         $groups = [];
         foreach ($cfg['groups'] as $g) {
-            $groups[$g['id']] = $this->controlGroup($g, $sources, $hw, $test, $now, $warnings, $fansChanged);
+            $groups[$g['id']] = $this->controlGroup($g, $sources, $hw, $test, $now, $warnings);
         }
-        if ($fansChanged) $this->saveFans();
 
         $this->lastWarnings = array_values(array_unique($warnings));
         $this->report($this->lastWarnings, $now);
@@ -1109,13 +1116,12 @@ final class PfcController {
     /** Sets every fan we control to full speed. Used after an error and when the service crashes. */
     public function failsafe(): void {
         $hw = pfc_scan_hwmon();
-        $keys = $this->cfg ? array_keys(pfc_controlled_keys($this->cfg)) : [];
-        foreach ($this->fans['pwm'] ?? [] as $key => $f) if (isset($f['orig_enable'])) $keys[] = $key;
+        $keys = array_merge($this->cfg ? array_keys(pfc_controlled_keys($this->cfg)) : [], array_keys($this->driven));
         foreach (array_unique($keys) as $key) {
             $fan = $hw['pwm'][$key] ?? null;
             if (!$fan) continue;
-            if ($fan['enable'] !== null && $fan['enable'] !== 1) @file_put_contents("{$fan['path']}_enable", '1');
-            @file_put_contents($fan['path'], (string)PFC_FAILSAFE_PWM);
+            $this->driven[$key] = true;
+            pfc_drive_fan(['value' => null] + $fan, PFC_FAILSAFE_PWM); // value null: always write it
         }
     }
 
@@ -1131,19 +1137,11 @@ final class PfcController {
             $errors = pfc_validate_config($new);
             if ($errors) pfc_log('Invalid configuration, all fans run at full speed: ' . implode(' ', $errors));
 
-            // Fans that are no longer in any group go back to the BIOS
-            if ($this->cfg) {
-                $gone = array_diff_key(pfc_controlled_keys($this->cfg), pfc_controlled_keys($new));
-                if ($gone) {
-                    $fans = pfc_load_fans();
-                    $hw = pfc_scan_hwmon();
-                    foreach (array_keys($gone) as $key) {
-                        pfc_release_fan($fans, $key, $hw);
-                        unset($this->written[$key], $this->conflicts[$key], $this->zeroSince[$key], $this->setAt[$key], $this->mismatchSince[$key]);
-                    }
-                    pfc_save_fans($fans);
-                    $this->fansHash = null;
-                }
+            // Fans we drove that are no longer in any group are left at full speed
+            $gone = array_keys(array_diff_key($this->driven, pfc_controlled_keys($new)));
+            pfc_release_fans($gone);
+            foreach ($gone as $key) {
+                unset($this->driven[$key], $this->written[$key], $this->conflicts[$key], $this->zeroSince[$key], $this->setAt[$key], $this->mismatchSince[$key]);
             }
             $this->cfgHash = $hash;
             $this->cfg = $new;
@@ -1156,11 +1154,6 @@ final class PfcController {
             $this->fans = pfc_load_fans();
         }
         return true;
-    }
-
-    private function saveFans(): void {
-        pfc_save_fans($this->fans);
-        $this->fansHash = (string)@md5_file(PFC_FANS);
     }
 
     /* ------------------------------------------------------------ sources */
@@ -1215,7 +1208,7 @@ final class PfcController {
 
     /* -------------------------------------------------------------- groups */
 
-    private function controlGroup(array $g, array $sources, array $hw, ?array $test, int $now, array &$warnings, bool &$fansChanged): array {
+    private function controlGroup(array $g, array $sources, array $hw, ?array $test, int $now, array &$warnings): array {
         $gid = $g['id'];
         $demand = $this->cfgErrors
             ? ['pwm' => PFC_FAILSAFE_PWM, 'reason' => 'Invalid configuration, running at full speed', 'source' => null, 'demands' => []]
@@ -1246,7 +1239,8 @@ final class PfcController {
                 continue;
             }
             $this->checkConflict($fan, $name, $warnings);
-            $error = pfc_drive_fan($this->fans, $fan, $pwm, $fansChanged);
+            $this->driven[$key] = true;
+            $error = pfc_drive_fan($fan, $pwm);
             if ($error) $warnings[] = "Fan \"$name\": $error.";
             $this->written[$key] = [$pwm, 1];
             // Small adjustments don't restart the settle time, the mismatch check is tolerant enough
@@ -1494,12 +1488,11 @@ final class PfcController {
  *
  * fans.json on the flash drive:
  * {
- *   "pwm":  { "<fan key>":  { "label": "...", "rpm": "<rpm key>|none", "orig_enable": "5", "test": {...} } },
+ *   "pwm":  { "<fan key>":  { "label": "...", "rpm": "<rpm key>|none", "test": {...} } },
  *   "rpm":  { "<rpm key>":  { "label": "..." } },
  *   "temp": { "<source id>": { "label": "..." } }
  * }
  *   rpm          RPM sensor paired with the output, set by Identify, the speed test or by hand
- *   orig_enable  the BIOS mode of the output before the plugin took it over, restored on release
  *   test         result of the last speed test, see scripts/fantest.php
  */
 
@@ -1507,6 +1500,9 @@ function pfc_load_fans(): array {
     $data = pfc_read_json(PFC_FANS, []);
     if (!is_array($data)) $data = [];
     foreach (['pwm', 'rpm', 'temp'] as $k) $data[$k] = is_array($data[$k] ?? null) ? $data[$k] : [];
+    // Versions before 2026.11.25 kept the BIOS mode of each fan here, it is no longer used
+    foreach ($data['pwm'] as &$f) if (is_array($f)) unset($f['orig_enable']);
+    unset($f);
     return $data;
 }
 
@@ -1688,18 +1684,9 @@ function pfc_is_manual(?int $enable, int $pwm): bool {
     return $enable === null || $enable === 1 || ($enable === 0 && $pwm === 255);
 }
 
-/**
- * Switches an output to manual control and sets its speed.
- * Remembers the BIOS mode in $fans the first time (returns $changed = true then).
- * Returns null on success, or an error message.
- */
-function pfc_drive_fan(array &$fans, array $fan, int $pwm, bool &$changed): ?string {
-    $key = $fan['key'];
+/** Switches an output to manual control and sets its speed. Returns null on success, or an error message. */
+function pfc_drive_fan(array $fan, int $pwm): ?string {
     if (!pfc_is_manual($fan['enable'], $pwm)) {
-        if (!isset($fans['pwm'][$key]['orig_enable'])) {
-            $fans['pwm'][$key]['orig_enable'] = (string)$fan['enable'];
-            $changed = true;
-        }
         if (@file_put_contents("{$fan['path']}_enable", '1') === false) return 'could not switch it to manual control';
     }
     if ($fan['value'] !== $pwm && @file_put_contents($fan['path'], (string)$pwm) === false) return 'could not set its speed';
@@ -1707,31 +1694,25 @@ function pfc_drive_fan(array &$fans, array $fan, int $pwm, bool &$changed): ?str
 }
 
 /**
- * Puts a fan back under BIOS/driver control (the mode it had before we took it over).
- * Safe to call more than once: a fan that is no longer in manual mode is left alone.
+ * Releases fans the plugin stops controlling (fan control disabled, fan removed from its group, plugin
+ * removed): they are left in manual mode at full speed, so no fan is ever left at a low speed with nothing
+ * controlling it. A reboot gives them back to the BIOS. Only called for fans the service actually drove,
+ * so nothing is touched while fan control is disabled. A fan test running on one of them is stopped
+ * first, otherwise it would put back the speed it found (ours) when it ends. Logs every fan.
  */
-function pfc_release_fan(array &$fans, string $key, array $hw): void {
-    $orig = $fans['pwm'][$key]['orig_enable'] ?? null;
-    unset($fans['pwm'][$key]['orig_enable']);
-    if (!isset($hw['pwm'][$key])) return;
-    $fan = $hw['pwm'][$key];
-    if ($orig !== null && $orig !== '' && $orig != 1 && is_writable("{$fan['path']}_enable")) {
-        @file_put_contents("{$fan['path']}_enable", (string)$orig);
-    } elseif ($fan['enable'] === null || $fan['enable'] === 1) {
-        // Was already manual before we took it, or has no mode: leave it at full speed to be safe
-        @file_put_contents($fan['path'], (string)PFC_FAILSAFE_PWM);
-    }
-}
-
-/** Releases every fan we control or have taken over. */
-function pfc_release_all(?array $cfg = null): void {
-    $cfg = $cfg ?? pfc_load_config();
-    $fans = pfc_load_fans();
+function pfc_release_fans(array $keys): void {
+    if (!$keys) return;
+    $test = pfc_fantest_running();
+    if ($test && in_array($test['key'] ?? '', $keys, true)) pfc_fantest_stop(5);
     $hw = pfc_scan_hwmon();
-    $keys = array_keys(pfc_controlled_keys($cfg));
-    foreach ($fans['pwm'] as $key => $f) if (isset($f['orig_enable'])) $keys[] = $key;
-    foreach (array_unique($keys) as $key) pfc_release_fan($fans, $key, $hw);
-    pfc_save_fans($fans);
+    $fans = pfc_load_fans();
+    foreach (array_unique($keys) as $key) {
+        $label = (string)($fans['pwm'][$key]['label'] ?? '');
+        $name = '"' . ($label !== '' ? $label : $key) . '"';
+        $fan = $hw['pwm'][$key] ?? null;
+        $error = $fan ? pfc_drive_fan(['value' => null] + $fan, PFC_FAILSAFE_PWM) : 'not found'; // value null: always write it
+        pfc_log($error ? "Fan $name could not be set to full speed ($error). Check this fan!" : "Fan $name released at full speed");
+    }
 }
 
 /** Every PWM output with its name, pairing, group and current RPM, for the web UI. */
@@ -1803,6 +1784,13 @@ function pfc_fantest_running(): ?array {
     // Just requested by the web UI, the script hasn't written its pid yet
     if (($state['phase'] ?? '') === 'starting') return time() - ($state['time'] ?? 0) < 10 ? $state : null;
     return pfc_pid_alive($state['pid'] ?? 0) ? $state : null;
+}
+
+/** Asks the running fan test to stop (it restores the fan), and waits up to $wait seconds for it to end. */
+function pfc_fantest_stop(int $wait = 0): void {
+    @mkdir(PFC_RUN, 0777, true);
+    touch(PFC_STOP_FLAG);
+    for ($i = 0; $i < $wait * 10 && pfc_fantest_running(); $i++) usleep(100000);
 }
 
 /** Starts scripts/fantest.php in the background. $mode: identify|speed. Returns an error or null. */
@@ -2786,7 +2774,7 @@ function pfc_group_demand(array $group, array $sources): array {
     })
     .on('click', '.pfc-g-delete', function () {
       const gi = gIndex(this);
-      if (!confirm('Delete the group "' + draft.groups[gi].name + '"? Its fans go back to the BIOS after you click Apply.')) return;
+      if (!confirm('Delete the group "' + draft.groups[gi].name + '"? After you click Apply, its fans run at full speed until the next reboot, then the BIOS controls them again.')) return;
       draft.groups.splice(gi, 1);
       markDirty();
       rebuild();
@@ -3186,15 +3174,19 @@ stop() {
         local pid
         pid=$(cat "$PIDFILE")
         kill "$pid" 2>/dev/null
-        for _ in $(seq 1 50); do
+        # Up to 10s: it finishes its check, stops a fan test and releases its fans
+        for _ in $(seq 1 100); do
             kill -0 "$pid" 2>/dev/null || break
             sleep 0.1
         done
-        kill -0 "$pid" 2>/dev/null && kill -9 "$pid" 2>/dev/null
+        if kill -0 "$pid" 2>/dev/null; then
+            # Hung, so it could not release its fans itself: set the fans of its groups to full speed
+            kill -9 "$pid" 2>/dev/null
+            logger -t "$NAME" "Service did not stop, killed it"
+            "$PHP" "$PLUGIN/scripts/release.php"
+        fi
     fi
     rm -f "$PIDFILE"
-    # Make sure every fan is handed back to the BIOS, even if the daemon was killed
-    "$PHP" "$PLUGIN/scripts/release.php"
     echo "PWM Fan Control stopped"
 }
 
@@ -3230,11 +3222,12 @@ esac
 <FILE Name="&emhttp;/scripts/release.php">
 <INLINE><![CDATA[<?php
 /*
- * PWM Fan Control - hands every fan we have taken over back to the BIOS.
- * Called by "rc.pwmfancontrol stop", also when the daemon was killed without cleaning up.
+ * PWM Fan Control - sets the fans of all groups to full speed. Only called by "rc.pwmfancontrol stop"
+ * when the service hung and had to be killed, so it could not release its fans itself. A normal stop
+ * releases the fans in the service (PfcController::run), and does nothing when fan control is disabled.
  */
 require_once dirname(__DIR__) . '/include/common.php';
-pfc_release_all();
+pfc_release_fans(array_keys(pfc_controlled_keys(pfc_load_config())));
 ]]></INLINE>
 </FILE>
 
@@ -3268,7 +3261,7 @@ PLUGIN="/usr/local/emhttp/plugins/$NAME"
 rm -f "/boot/config/plugins/$NAME/$NAME.cron"
 /usr/local/sbin/update_cron
 rm -rf "$PLUGIN" "/tmp/$NAME" "/var/run/$NAME.pid"
-echo "PWM Fan Control removed. Fans were handed back to the BIOS."
+echo "PWM Fan Control removed. The fans it controlled run at full speed until the next reboot, then the BIOS controls them again."
 ]]></INLINE>
 </FILE>
 

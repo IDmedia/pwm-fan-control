@@ -12,7 +12,10 @@
  *     Exception: disks that just spun up get SPINUP_GRACE seconds for Unraid to read their temperature.
  *   - An error in the loop itself sets every controlled fan to full speed and is retried next check.
  *   - A crash of the service leaves the fans at full speed until the watchdog restarts it.
- *   - Only a deliberate stop (disabled, removed, signal) hands the fans back to the BIOS.
+ *   - When the service stops (disabled, removed, signal) or a fan leaves its group, the fans it drove are
+ *     left at full speed (pfc_release_fans): nothing controls them anymore, so they must not stay at a
+ *     low speed. A reboot gives them back to the BIOS.
+ *   - Fans are only touched while fan control is enabled. Which fans were driven is only kept in memory.
  *
  * It also watches for problems and reports them as warnings (status page, syslog, Unraid alert
  * notifications):
@@ -49,6 +52,7 @@ final class PfcController {
     private array $lastGood = [];     // source id => last good reading
     private array $failures = [];     // source id => failed reads in a row
     private array $waitSince = [];    // disk source id => time its spun-up disks were first seen without a temperature, false = no grace
+    private array $driven = [];       // fan key => true: fans this service has set, released at full speed when it stops
     private array $written = [];      // fan key => [pwm we set, enable we set]
     private array $conflicts = [];    // fan key => checks in a row changed by someone else
     private array $zeroSince = [];    // fan key => time it was first seen at 0 RPM while it should spin
@@ -65,7 +69,7 @@ final class PfcController {
         $this->alerts = self::loadAlerts();
     }
 
-    /** Runs until stopped or disabled, then hands the fans back to the BIOS. */
+    /** Runs until stopped or disabled, then leaves the fans it drove at full speed. */
     public function run(): void {
         pfc_log('Started');
         while ($this->running) {
@@ -80,9 +84,9 @@ final class PfcController {
             // Sleep until the next check, waking up regularly to notice a stop signal
             while ($this->running && microtime(true) < $until) usleep((int)min(250000, max(1000, ($until - microtime(true)) * 1e6)));
         }
-        pfc_release_all($this->cfg);
+        pfc_release_fans(array_keys($this->driven));
         @unlink(PFC_STATUS);
-        pfc_log('Stopped, fans handed back to the BIOS');
+        pfc_log('Stopped');
     }
 
     /** One check. Returns false when fan control was disabled. */
@@ -98,12 +102,10 @@ final class PfcController {
         $test = pfc_fantest_running();
 
         $warnings = $nv['error'] ? [$nv['error']] : [];
-        $fansChanged = false;
         $groups = [];
         foreach ($cfg['groups'] as $g) {
-            $groups[$g['id']] = $this->controlGroup($g, $sources, $hw, $test, $now, $warnings, $fansChanged);
+            $groups[$g['id']] = $this->controlGroup($g, $sources, $hw, $test, $now, $warnings);
         }
-        if ($fansChanged) $this->saveFans();
 
         $this->lastWarnings = array_values(array_unique($warnings));
         $this->report($this->lastWarnings, $now);
@@ -122,13 +124,12 @@ final class PfcController {
     /** Sets every fan we control to full speed. Used after an error and when the service crashes. */
     public function failsafe(): void {
         $hw = pfc_scan_hwmon();
-        $keys = $this->cfg ? array_keys(pfc_controlled_keys($this->cfg)) : [];
-        foreach ($this->fans['pwm'] ?? [] as $key => $f) if (isset($f['orig_enable'])) $keys[] = $key;
+        $keys = array_merge($this->cfg ? array_keys(pfc_controlled_keys($this->cfg)) : [], array_keys($this->driven));
         foreach (array_unique($keys) as $key) {
             $fan = $hw['pwm'][$key] ?? null;
             if (!$fan) continue;
-            if ($fan['enable'] !== null && $fan['enable'] !== 1) @file_put_contents("{$fan['path']}_enable", '1');
-            @file_put_contents($fan['path'], (string)PFC_FAILSAFE_PWM);
+            $this->driven[$key] = true;
+            pfc_drive_fan(['value' => null] + $fan, PFC_FAILSAFE_PWM); // value null: always write it
         }
     }
 
@@ -144,19 +145,11 @@ final class PfcController {
             $errors = pfc_validate_config($new);
             if ($errors) pfc_log('Invalid configuration, all fans run at full speed: ' . implode(' ', $errors));
 
-            // Fans that are no longer in any group go back to the BIOS
-            if ($this->cfg) {
-                $gone = array_diff_key(pfc_controlled_keys($this->cfg), pfc_controlled_keys($new));
-                if ($gone) {
-                    $fans = pfc_load_fans();
-                    $hw = pfc_scan_hwmon();
-                    foreach (array_keys($gone) as $key) {
-                        pfc_release_fan($fans, $key, $hw);
-                        unset($this->written[$key], $this->conflicts[$key], $this->zeroSince[$key], $this->setAt[$key], $this->mismatchSince[$key]);
-                    }
-                    pfc_save_fans($fans);
-                    $this->fansHash = null;
-                }
+            // Fans we drove that are no longer in any group are left at full speed
+            $gone = array_keys(array_diff_key($this->driven, pfc_controlled_keys($new)));
+            pfc_release_fans($gone);
+            foreach ($gone as $key) {
+                unset($this->driven[$key], $this->written[$key], $this->conflicts[$key], $this->zeroSince[$key], $this->setAt[$key], $this->mismatchSince[$key]);
             }
             $this->cfgHash = $hash;
             $this->cfg = $new;
@@ -169,11 +162,6 @@ final class PfcController {
             $this->fans = pfc_load_fans();
         }
         return true;
-    }
-
-    private function saveFans(): void {
-        pfc_save_fans($this->fans);
-        $this->fansHash = (string)@md5_file(PFC_FANS);
     }
 
     /* ------------------------------------------------------------ sources */
@@ -228,7 +216,7 @@ final class PfcController {
 
     /* -------------------------------------------------------------- groups */
 
-    private function controlGroup(array $g, array $sources, array $hw, ?array $test, int $now, array &$warnings, bool &$fansChanged): array {
+    private function controlGroup(array $g, array $sources, array $hw, ?array $test, int $now, array &$warnings): array {
         $gid = $g['id'];
         $demand = $this->cfgErrors
             ? ['pwm' => PFC_FAILSAFE_PWM, 'reason' => 'Invalid configuration, running at full speed', 'source' => null, 'demands' => []]
@@ -259,7 +247,8 @@ final class PfcController {
                 continue;
             }
             $this->checkConflict($fan, $name, $warnings);
-            $error = pfc_drive_fan($this->fans, $fan, $pwm, $fansChanged);
+            $this->driven[$key] = true;
+            $error = pfc_drive_fan($fan, $pwm);
             if ($error) $warnings[] = "Fan \"$name\": $error.";
             $this->written[$key] = [$pwm, 1];
             // Small adjustments don't restart the settle time, the mismatch check is tolerant enough

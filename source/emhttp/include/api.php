@@ -160,8 +160,7 @@ case 'fantest':
     pfc_reply(['ok' => true]);
 
 case 'fantest_stop':
-    @mkdir(PFC_RUN, 0777, true);
-    touch(PFC_STOP_FLAG);
+    pfc_fantest_stop();
     pfc_reply(['ok' => true]);
 
 default:

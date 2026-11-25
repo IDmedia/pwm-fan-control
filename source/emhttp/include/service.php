@@ -32,6 +32,13 @@ function pfc_fantest_running(): ?array {
     return pfc_pid_alive($state['pid'] ?? 0) ? $state : null;
 }
 
+/** Asks the running fan test to stop (it restores the fan), and waits up to $wait seconds for it to end. */
+function pfc_fantest_stop(int $wait = 0): void {
+    @mkdir(PFC_RUN, 0777, true);
+    touch(PFC_STOP_FLAG);
+    for ($i = 0; $i < $wait * 10 && pfc_fantest_running(); $i++) usleep(100000);
+}
+
 /** Starts scripts/fantest.php in the background. $mode: identify|speed. Returns an error or null. */
 function pfc_fantest_start(string $key, string $mode): ?string {
     if (pfc_fantest_running()) return 'Another fan test is running right now.';

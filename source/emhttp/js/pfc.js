@@ -682,7 +682,7 @@
     })
     .on('click', '.pfc-g-delete', function () {
       const gi = gIndex(this);
-      if (!confirm('Delete the group "' + draft.groups[gi].name + '"? Its fans go back to the BIOS after you click Apply.')) return;
+      if (!confirm('Delete the group "' + draft.groups[gi].name + '"? After you click Apply, its fans run at full speed until the next reboot, then the BIOS controls them again.')) return;
       draft.groups.splice(gi, 1);
       markDirty();
       rebuild();

@@ -6,4 +6,4 @@ PLUGIN="/usr/local/emhttp/plugins/$NAME"
 rm -f "/boot/config/plugins/$NAME/$NAME.cron"
 /usr/local/sbin/update_cron
 rm -rf "$PLUGIN" "/tmp/$NAME" "/var/run/$NAME.pid"
-echo "PWM Fan Control removed. Fans were handed back to the BIOS."
+echo "PWM Fan Control removed. The fans it controlled run at full speed until the next reboot, then the BIOS controls them again."

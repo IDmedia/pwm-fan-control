@@ -5,12 +5,11 @@
  *
  * fans.json on the flash drive:
  * {
- *   "pwm":  { "<fan key>":  { "label": "...", "rpm": "<rpm key>|none", "orig_enable": "5", "test": {...} } },
+ *   "pwm":  { "<fan key>":  { "label": "...", "rpm": "<rpm key>|none", "test": {...} } },
  *   "rpm":  { "<rpm key>":  { "label": "..." } },
  *   "temp": { "<source id>": { "label": "..." } }
  * }
  *   rpm          RPM sensor paired with the output, set by Identify, the speed test or by hand
- *   orig_enable  the BIOS mode of the output before the plugin took it over, restored on release
  *   test         result of the last speed test, see scripts/fantest.php
  */
 
@@ -18,6 +17,9 @@ function pfc_load_fans(): array {
     $data = pfc_read_json(PFC_FANS, []);
     if (!is_array($data)) $data = [];
     foreach (['pwm', 'rpm', 'temp'] as $k) $data[$k] = is_array($data[$k] ?? null) ? $data[$k] : [];
+    // Versions before 2026.11.25 kept the BIOS mode of each fan here, it is no longer used
+    foreach ($data['pwm'] as &$f) if (is_array($f)) unset($f['orig_enable']);
+    unset($f);
     return $data;
 }
 
@@ -199,18 +201,9 @@ function pfc_is_manual(?int $enable, int $pwm): bool {
     return $enable === null || $enable === 1 || ($enable === 0 && $pwm === 255);
 }
 
-/**
- * Switches an output to manual control and sets its speed.
- * Remembers the BIOS mode in $fans the first time (returns $changed = true then).
- * Returns null on success, or an error message.
- */
-function pfc_drive_fan(array &$fans, array $fan, int $pwm, bool &$changed): ?string {
-    $key = $fan['key'];
+/** Switches an output to manual control and sets its speed. Returns null on success, or an error message. */
+function pfc_drive_fan(array $fan, int $pwm): ?string {
     if (!pfc_is_manual($fan['enable'], $pwm)) {
-        if (!isset($fans['pwm'][$key]['orig_enable'])) {
-            $fans['pwm'][$key]['orig_enable'] = (string)$fan['enable'];
-            $changed = true;
-        }
         if (@file_put_contents("{$fan['path']}_enable", '1') === false) return 'could not switch it to manual control';
     }
     if ($fan['value'] !== $pwm && @file_put_contents($fan['path'], (string)$pwm) === false) return 'could not set its speed';
@@ -218,31 +211,25 @@ function pfc_drive_fan(array &$fans, array $fan, int $pwm, bool &$changed): ?str
 }
 
 /**
- * Puts a fan back under BIOS/driver control (the mode it had before we took it over).
- * Safe to call more than once: a fan that is no longer in manual mode is left alone.
+ * Releases fans the plugin stops controlling (fan control disabled, fan removed from its group, plugin
+ * removed): they are left in manual mode at full speed, so no fan is ever left at a low speed with nothing
+ * controlling it. A reboot gives them back to the BIOS. Only called for fans the service actually drove,
+ * so nothing is touched while fan control is disabled. A fan test running on one of them is stopped
+ * first, otherwise it would put back the speed it found (ours) when it ends. Logs every fan.
  */
-function pfc_release_fan(array &$fans, string $key, array $hw): void {
-    $orig = $fans['pwm'][$key]['orig_enable'] ?? null;
-    unset($fans['pwm'][$key]['orig_enable']);
-    if (!isset($hw['pwm'][$key])) return;
-    $fan = $hw['pwm'][$key];
-    if ($orig !== null && $orig !== '' && $orig != 1 && is_writable("{$fan['path']}_enable")) {
-        @file_put_contents("{$fan['path']}_enable", (string)$orig);
-    } elseif ($fan['enable'] === null || $fan['enable'] === 1) {
-        // Was already manual before we took it, or has no mode: leave it at full speed to be safe
-        @file_put_contents($fan['path'], (string)PFC_FAILSAFE_PWM);
-    }
-}
-
-/** Releases every fan we control or have taken over. */
-function pfc_release_all(?array $cfg = null): void {
-    $cfg = $cfg ?? pfc_load_config();
-    $fans = pfc_load_fans();
+function pfc_release_fans(array $keys): void {
+    if (!$keys) return;
+    $test = pfc_fantest_running();
+    if ($test && in_array($test['key'] ?? '', $keys, true)) pfc_fantest_stop(5);
     $hw = pfc_scan_hwmon();
-    $keys = array_keys(pfc_controlled_keys($cfg));
-    foreach ($fans['pwm'] as $key => $f) if (isset($f['orig_enable'])) $keys[] = $key;
-    foreach (array_unique($keys) as $key) pfc_release_fan($fans, $key, $hw);
-    pfc_save_fans($fans);
+    $fans = pfc_load_fans();
+    foreach (array_unique($keys) as $key) {
+        $label = (string)($fans['pwm'][$key]['label'] ?? '');
+        $name = '"' . ($label !== '' ? $label : $key) . '"';
+        $fan = $hw['pwm'][$key] ?? null;
+        $error = $fan ? pfc_drive_fan(['value' => null] + $fan, PFC_FAILSAFE_PWM) : 'not found'; // value null: always write it
+        pfc_log($error ? "Fan $name could not be set to full speed ($error). Check this fan!" : "Fan $name released at full speed");
+    }
 }
 
 /** Every PWM output with its name, pairing, group and current RPM, for the web UI. */

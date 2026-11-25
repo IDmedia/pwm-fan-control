@@ -37,15 +37,19 @@ stop() {
         local pid
         pid=$(cat "$PIDFILE")
         kill "$pid" 2>/dev/null
-        for _ in $(seq 1 50); do
+        # Up to 10s: it finishes its check, stops a fan test and releases its fans
+        for _ in $(seq 1 100); do
             kill -0 "$pid" 2>/dev/null || break
             sleep 0.1
         done
-        kill -0 "$pid" 2>/dev/null && kill -9 "$pid" 2>/dev/null
+        if kill -0 "$pid" 2>/dev/null; then
+            # Hung, so it could not release its fans itself: set the fans of its groups to full speed
+            kill -9 "$pid" 2>/dev/null
+            logger -t "$NAME" "Service did not stop, killed it"
+            "$PHP" "$PLUGIN/scripts/release.php"
+        fi
     fi
     rm -f "$PIDFILE"
-    # Make sure every fan is handed back to the BIOS, even if the daemon was killed
-    "$PHP" "$PLUGIN/scripts/release.php"
     echo "PWM Fan Control stopped"
 }
 

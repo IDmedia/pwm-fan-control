@@ -116,8 +116,9 @@ GPU 0 at 60 °C asks for 67%, GPU 1 at 50 °C for 46% and the CPU at 55 °C for 
 jumps to 80 °C, the fans go to 100% within one check. When it cools down again, they stay at 100% for 30 more
 seconds before following the curve back down.
 
-The first time the plugin controls a fan, it remembers the fan's BIOS mode and switches the output to manual
-control. Disabling fan control, removing a fan from its group or removing the plugin puts that mode back.
+The plugin only touches fans while fan control is enabled: it switches the outputs of its groups to manual control.
+Disabling fan control, removing a fan from its group or removing the plugin leaves those fans at full speed, so a
+fan is never stuck at a low speed with nothing controlling it. A reboot gives them back to the BIOS.
 
 ### Temperature sources
 
@@ -254,8 +255,8 @@ of warnings.
 
 ## Uninstall
 
-Remove the plugin in *Plugins*. This stops the service, hands every fan back to its BIOS mode and removes the
-watchdog cron entry and the plugin files. Your settings and fan names stay on the flash drive in
+Remove the plugin in *Plugins*. This stops the service, leaves the fans it controlled at full speed until the next
+reboot (then the BIOS controls them again) and removes the watchdog cron entry and the plugin files. Your settings and fan names stay on the flash drive in
 `/boot/config/plugins/pwm.fan.control/`. Delete that folder to remove them too.
 
 ## How it is built
@@ -266,7 +267,7 @@ All plugin files live in `source/`:
 |---|---|
 | `source/emhttp/` | Installed to `/usr/local/emhttp/plugins/pwm.fan.control/`: settings page, dashboard tile, API, service and scripts. |
 | `source/emhttp/include/` | `config.php` (settings), `hardware.php` (hwmon, fan names, drivers, hardware check), `sources.php` (temperatures, curves), `service.php` (service, fan tests), `controller.php` (the control loop), `api.php` (web UI requests). `common.php` loads them all. |
-| `source/emhttp/scripts/` | `daemon.php` (the service), `rc.pwmfancontrol` (start/stop/watchdog), `fantest.php` (Identify and speed test), `release.php` (hands every fan back to the BIOS). |
+| `source/emhttp/scripts/` | `daemon.php` (the service), `rc.pwmfancontrol` (start/stop/watchdog), `fantest.php` (Identify and speed test), `release.php` (fans of all groups to full speed, after a hung service had to be killed). |
 | `source/install.sh` | Runs after every install, update and boot: imports old settings and starts the service if enabled. |
 | `source/remove.sh` | Runs when the plugin is removed. |
 | `CHANGES.md` | Release notes shown in *Plugins*. |
@@ -286,7 +287,8 @@ the source. Set `PLUGIN_URL` when building to change the URL Unraid checks for u
 Install the `.plg` with fan control disabled and open the settings page. Every fan output, RPM sensor and
 temperature source should be listed with live values. Run *Identify* on each output and a speed test on one, then
 create a group, enable fan control and watch the speed follow the curve. Unplugging a paired fan for half a minute
-should show the *not spinning* warning. Disabling fan control should put every fan back to its BIOS mode.
+should show the *not spinning* warning. Disabling fan control should leave every fan of the groups at full speed
+(the syslog lists each fan). With fan control disabled, creating a group and clicking *Apply* must not change any fan.
 
 ## License
 

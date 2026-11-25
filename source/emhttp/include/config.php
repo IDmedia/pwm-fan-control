@@ -237,7 +237,7 @@ function pfc_migrate_old(): bool {
     $fans = ['pwm' => [], 'rpm' => is_array($old_fans['rpm'] ?? null) ? $old_fans['rpm'] : [], 'temp' => []];
     $controlled = [];
     foreach (is_array($old_fans['pwm'] ?? null) ? $old_fans['pwm'] : [] as $key => $f) {
-        $fans['pwm'][$key] = array_intersect_key((array)$f, ['label' => 1, 'rpm' => 1, 'orig_enable' => 1]);
+        $fans['pwm'][$key] = array_intersect_key((array)$f, ['label' => 1, 'rpm' => 1]);
         if (!empty($f['controlled'])) $controlled[] = $key;
     }
     $cfg['groups'][] = [
