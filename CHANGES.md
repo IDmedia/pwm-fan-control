@@ -1,3 +1,7 @@
+###2026.11.26b
+- Disk temperatures are only read with smartctl for disk sources a group uses
+- A device that gives no temperature (USB sticks, virtual media) is only tried again every 10 minutes instead of every 30 seconds
+
 ###2026.11.26
 - Fixed: after disks spun up, a "Fan problem" alert (no disk temperature available) and full speed could follow 10 minutes later, because Unraid only reads disk temperatures every 30 minutes by default. Spun-up disks without a temperature are now read with smartctl (it never wakes a disk) until Unraid has their temperature
 
