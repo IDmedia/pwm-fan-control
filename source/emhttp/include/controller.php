@@ -9,7 +9,8 @@
  *
  * Safety rules
  *   - A source that can't be read on two checks in a row makes its groups run at full speed.
- *     Exception: disks that just spun up get SPINUP_GRACE seconds for Unraid to read their temperature.
+ *     Exception: disks that just spun up get SPINUP_GRACE seconds to report a temperature (pfc_read_disks reads
+ *     it with smartctl until Unraid has it; this covers the first read and disks smartctl can't read).
  *   - An error in the loop itself sets every controlled fan to full speed and is retried next check.
  *   - A crash of the service leaves the fans at full speed until the watchdog restarts it.
  *   - When the service stops (disabled, removed, signal) or a fan leaves its group, the fans it drove are

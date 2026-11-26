@@ -1,3 +1,6 @@
+###2026.11.26
+- Fixed: after disks spun up, a "Fan problem" alert (no disk temperature available) and full speed could follow 10 minutes later, because Unraid only reads disk temperatures every 30 minutes by default. Spun-up disks without a temperature are now read with smartctl (it never wakes a disk) until Unraid has their temperature
+
 ###2026.11.25
 - Fixed: with fan control disabled, clicking Apply (or booting) could set fans in a group to full speed. Fans are now only touched while fan control is enabled
 - When fan control is disabled, a fan is removed from its group or the plugin is removed, the fans it controlled are left at full speed instead of being handed back to the BIOS, so no fan can be stuck at a low speed. A reboot gives them back to the BIOS. The syslog lists each fan

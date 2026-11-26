@@ -2,13 +2,16 @@
 <!DOCTYPE PLUGIN [
 <!ENTITY name      "pwm.fan.control">
 <!ENTITY author    "IDmedia">
-<!ENTITY version   "2026.11.25">
+<!ENTITY version   "2026.11.26">
 <!ENTITY pluginURL "https://raw.githubusercontent.com/IDmedia/pwm-fan-control/main/pwm.fan.control.plg">
 <!ENTITY emhttp    "/usr/local/emhttp/plugins/&name;">
 ]>
 <PLUGIN name="&name;" author="&author;" version="&version;" pluginURL="&pluginURL;" min="7.4.0" support="https://github.com/IDmedia/pwm-fan-control/issues" icon="icon-fan" launch="Settings/PWMFanControl">
 
 <CHANGES>
+###2026.11.26
+- Fixed: after disks spun up, a "Fan problem" alert (no disk temperature available) and full speed could follow 10 minutes later, because Unraid only reads disk temperatures every 30 minutes by default. Spun-up disks without a temperature are now read with smartctl (it never wakes a disk) until Unraid has their temperature
+
 ###2026.11.25
 - Fixed: with fan control disabled, clicking Apply (or booting) could set fans in a group to full speed. Fans are now only touched while fan control is enabled
 - When fan control is disabled, a fan is removed from its group or the plugin is removed, the fans it controlled are left at full speed instead of being handed back to the BIOS, so no fan can be stuck at a low speed. A reboot gives them back to the BIOS. The syslog lists each fan
@@ -601,6 +604,7 @@ const PFC_HISTORY    = PFC_RUN . '/history.json';
 const PFC_FANTEST    = PFC_RUN . '/fantest.json';
 const PFC_STOP_FLAG  = PFC_RUN . '/fantest.stop';
 const PFC_NV_CACHE   = PFC_RUN . '/nvidia.json';
+const PFC_SMART_DIR  = PFC_RUN . '/smart';                // smartctl runs for disks Unraid has no temperature for yet
 const PFC_HW_CACHE   = PFC_RUN . '/hardware.json';
 const PFC_ALERTS     = PFC_RUN . '/alerts.json';         // warnings and the alerts sent for them
 const PFC_NOTIFY_LIMITS = PFC_RUN . '/notify-limits.json'; // rate limits of service alerts
@@ -608,6 +612,7 @@ const PFC_PIDFILE    = '/var/run/' . PFC_NAME . '.pid';
 const PFC_RC         = PFC_PLUGIN . '/scripts/rc.pwmfancontrol';
 const PFC_HWMON      = '/sys/class/hwmon';
 const PFC_NVIDIA_SMI = '/usr/bin/nvidia-smi';
+const PFC_SMARTCTL   = '/usr/sbin/smartctl';
 const PFC_EMHTTP     = '/var/local/emhttp';
 const PFC_NOTIFY     = '/usr/local/emhttp/webGui/scripts/notify';
 const PFC_UPDATE_CRON = '/usr/local/sbin/update_cron';
@@ -1001,7 +1006,8 @@ function pfc_migrate_old(): bool {
  *
  * Safety rules
  *   - A source that can't be read on two checks in a row makes its groups run at full speed.
- *     Exception: disks that just spun up get SPINUP_GRACE seconds for Unraid to read their temperature.
+ *     Exception: disks that just spun up get SPINUP_GRACE seconds to report a temperature (pfc_read_disks reads
+ *     it with smartctl until Unraid has it; this covers the first read and disks smartctl can't read).
  *   - An error in the loop itself sets every controlled fan to full speed and is retried next check.
  *   - A crash of the service leaves the fans at full speed until the watchdog restarts it.
  *   - When the service stops (disabled, removed, signal) or a fan leaves its group, the fans it drove are
@@ -1881,7 +1887,7 @@ function pfc_read_disks(array $cfg): array {
             $type = $force_type ?? (string)($d['type'] ?? '');
             $temp = trim((string)($d['temp'] ?? ''), '"');
             $disk = [
-                'name' => (string)$section, 'type' => $type, 'device' => (string)($d['id'] ?? ''),
+                'name' => (string)$section, 'type' => $type, 'device' => (string)($d['id'] ?? ''), 'dev' => (string)($d['device'] ?? ''),
                 'source' => pfc_disk_source_id($type, (string)$section),
                 'temp' => preg_match('/^\d+$/', $temp) ? (int)$temp : null,
                 'spundown' => ($d['spundown'] ?? '0') == '1',
@@ -1893,7 +1899,81 @@ function pfc_read_disks(array $cfg): array {
             $disks[] = $disk;
         }
     }
+
+    // Unraid only reads disk temperatures every poll_attributes seconds (30 minutes by default), so a disk
+    // that spun up can go that long without one. Read those ourselves until Unraid has it.
+    $missing = [];
+    foreach ($disks as $i => $d) {
+        if ($d['included'] && !$d['spundown'] && $d['temp'] === null && $d['dev'] !== '') $missing[$i] = $d['dev'];
+    }
+    if ($missing) {
+        $smart = pfc_smart_temps(array_values(array_unique($missing)));
+        foreach ($missing as $i => $dev) if (isset($smart[$dev])) $disks[$i]['temp'] = $smart[$dev];
+    }
     return $disks;
+}
+
+/**
+ * Temperatures of spun-up disks read with smartctl, [dev => int] for the ones known. "-n standby" never
+ * wakes a disk (a disk that spun down meanwhile just reports nothing), like Unraid's own SMART reads.
+ *
+ * Like nvidia-smi, smartctl runs in the background and is never waited on: a failing disk can make it
+ * hang, which must not freeze fan control. A device's result is used for $max_age seconds, a new read
+ * starts when the last one is older than $refresh seconds and finished. Until the first read finishes,
+ * the device has no temperature (the service treats that as waiting for the spun-up disks).
+ */
+function pfc_smart_temps(array $devs, int $refresh = 30, int $max_age = 120): array {
+    if (!$devs || !is_executable(PFC_SMARTCTL)) return [];
+    @mkdir(PFC_SMART_DIR, 0777, true);
+    $lock = fopen(PFC_SMART_DIR . '/lock', 'c');
+    if ($lock) flock($lock, LOCK_EX);
+
+    $cacheFile = PFC_SMART_DIR . '/temps.json';
+    $cache = pfc_read_json($cacheFile, []);
+    $cache = is_array($cache) ? $cache : [];
+    $now = time();
+    $temps = [];
+    foreach ($devs as $dev) {
+        if (!preg_match('/^[a-z][a-z0-9]*$/', $dev)) continue; // sdb, nvme0n1
+        $base = PFC_SMART_DIR . "/$dev";
+        // Pick up a finished read ("<dev>.rc" appears when it is done)
+        $claim = "$base.rc." . getmypid();
+        if (@rename("$base.rc", $claim)) {
+            $cache[$dev] = ['time' => (int)@filemtime($claim), 'temp' => pfc_smart_parse_temp((string)@file_get_contents("$base.out"))];
+            @unlink($claim);
+            @unlink("$base.pid");
+        }
+        $busy = pfc_pid_alive(trim((string)@file_get_contents("$base.pid"))) || is_file("$base.rc");
+        if (!$busy && $now - ($cache[$dev]['time'] ?? 0) >= $refresh) {
+            $cmd = '(timeout -k 2 10 ' . escapeshellarg(PFC_SMARTCTL) . ' -n standby -A ' . escapeshellarg("/dev/$dev")
+                 . ' > ' . escapeshellarg("$base.out") . ' 2>&1; echo $? > ' . escapeshellarg("$base.rc.tmp")
+                 . '; mv ' . escapeshellarg("$base.rc.tmp") . ' ' . escapeshellarg("$base.rc") . ')'
+                 . ' > /dev/null 2>&1 < /dev/null & echo $!';
+            file_put_contents("$base.pid", trim((string)shell_exec($cmd)));
+        }
+        $c = $cache[$dev] ?? null;
+        if ($c && $c['temp'] !== null && $now - $c['time'] <= $max_age) $temps[$dev] = (int)$c['temp'];
+    }
+    // Forget devices not asked about for a while (Unraid has their temperature again)
+    $cache = array_filter($cache, fn($c) => $now - ($c['time'] ?? 0) < 3600);
+    pfc_write_json($cacheFile, $cache);
+    if ($lock) { flock($lock, LOCK_UN); fclose($lock); }
+    return $temps;
+}
+
+/** The temperature in "smartctl -A" output: ATA attribute 194 (or 190), SAS or NVMe. */
+function pfc_smart_parse_temp(string $out): ?int {
+    $found = [];
+    foreach (explode("\n", $out) as $line) {
+        // ID# ATTRIBUTE_NAME FLAG VALUE WORST THRESH TYPE UPDATED WHEN_FAILED RAW_VALUE
+        if (preg_match('/^\s*(194|190)\s+\S+\s+(?:\S+\s+){7}(\d+)/', $line, $m)) $found[$m[1]] ??= (int)$m[2];
+        elseif (preg_match('/^Current Drive Temperature:\s+(\d+)\s*C/', $line, $m)) $found['sas'] ??= (int)$m[1];
+        elseif (preg_match('/^Temperature:\s+(\d+)\s+Celsius/', $line, $m)) $found['nvme'] ??= (int)$m[1];
+    }
+    foreach (['194', '190', 'sas', 'nvme'] as $k) {
+        if (isset($found[$k]) && $found[$k] > 0 && $found[$k] < 100) return $found[$k];
+    }
+    return null;
 }
 
 function pfc_parity_running(): bool {
