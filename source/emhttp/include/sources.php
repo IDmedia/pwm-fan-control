@@ -87,11 +87,12 @@ function pfc_read_disks(array $cfg): array {
  * starts when the last one is older than $refresh seconds and finished. Until the first read finishes,
  * the device has no temperature (the service treats that as waiting for the spun-up disks).
  *
- * A device that was awake but reported no temperature (USB sticks, virtual media, unsupported bridges)
- * or timed out is only tried again after $retry seconds. One that was asleep (it spun down meanwhile)
- * is read again normally, so it doesn't miss its temperature once it is really spun up.
+ * A read without a temperature is tried again after $quick seconds: a disk that is still spinning up
+ * (Unraid marks it spun up on its first I/O) or asleep has none yet. Only a device that was awake and
+ * gave no temperature $tries times in a row (USB sticks, virtual media, unsupported bridges) is left
+ * alone for $retry seconds between reads.
  */
-function pfc_smart_temps(array $devs, int $refresh = 30, int $max_age = 120, int $retry = 600): array {
+function pfc_smart_temps(array $devs, int $refresh = 30, int $max_age = 120, int $retry = 600, int $quick = 10, int $tries = 3): array {
     if (!$devs || !is_executable(PFC_SMARTCTL)) return [];
     @mkdir(PFC_SMART_DIR, 0777, true);
     $lock = fopen(PFC_SMART_DIR . '/lock', 'c');
@@ -109,13 +110,15 @@ function pfc_smart_temps(array $devs, int $refresh = 30, int $max_age = 120, int
         $claim = "$base.rc." . getmypid();
         if (@rename("$base.rc", $claim)) {
             $out = (string)@file_get_contents("$base.out");
-            $cache[$dev] = ['time' => (int)@filemtime($claim), 'temp' => pfc_smart_parse_temp($out),
-                'asleep' => (bool)preg_match('/^Device is in (STANDBY|SLEEP)/m', $out)];
+            $temp = pfc_smart_parse_temp($out);
+            $asleep = (bool)preg_match('/^Device is in (STANDBY|SLEEP)/m', $out);
+            $misses = $temp === null && !$asleep ? ($cache[$dev]['misses'] ?? 0) + 1 : 0;
+            $cache[$dev] = ['time' => (int)@filemtime($claim), 'temp' => $temp, 'asleep' => $asleep, 'misses' => $misses];
             @unlink($claim);
             @unlink("$base.pid");
         }
         $c = $cache[$dev] ?? null;
-        $wait = $c && $c['temp'] === null && empty($c['asleep']) ? $retry : $refresh;
+        $wait = !$c ? 0 : ($c['temp'] !== null ? $refresh : (($c['misses'] ?? 0) >= $tries ? $retry : $quick));
         $busy = pfc_pid_alive(trim((string)@file_get_contents("$base.pid"))) || is_file("$base.rc");
         if (!$busy && $now - ($c['time'] ?? 0) >= $wait) {
             $cmd = '(timeout -k 2 10 ' . escapeshellarg(PFC_SMARTCTL) . ' -n standby -A ' . escapeshellarg("/dev/$dev")

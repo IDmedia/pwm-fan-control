@@ -1,3 +1,6 @@
+###2026.11.27
+- Fixed: a disk read with smartctl while it was still spinning up gave no temperature and was then left alone for 10 minutes, which could still lead to a "no disk temperature available" alert. A read without a temperature is now tried again after 10 seconds, and a device only backs off to every 10 minutes after 3 reads in a row without a temperature
+
 ###2026.11.26b
 - Disk temperatures are only read with smartctl for disk sources a group uses
 - A device that gives no temperature (USB sticks, virtual media) is only tried again every 10 minutes instead of every 30 seconds
